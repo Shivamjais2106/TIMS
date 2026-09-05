@@ -1,0 +1,248 @@
+@import 'tailwindcss';
+
+/*
+ * TIMS design system.
+ *
+ * Palette intent: a geospatial intelligence console, not a generic admin
+ * template. Deep navy substrate, a single cyan instrument accent, and a
+ * dedicated thermal ramp (blue -> amber -> orange -> red) reserved exclusively
+ * for risk so colour always means the same thing.
+ */
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  color-scheme: light;
+
+  --tims-bg: #f4f7fb;
+  --tims-bg-grid: #dfe7f2;
+  --tims-surface: #ffffff;
+  --tims-surface-2: #eef3f9;
+  --tims-surface-3: #e3ebf5;
+  --tims-border: #d5dfec;
+  --tims-border-strong: #bccbe0;
+
+  --tims-fg: #0a1526;
+  --tims-fg-muted: #55677f;
+  --tims-fg-subtle: #7c8ca3;
+
+  --tims-primary: #0e7490;
+  --tims-primary-fg: #ffffff;
+  --tims-primary-soft: #d6f1f8;
+
+  --tims-risk-low: #0284c7;
+  --tims-risk-medium: #b45309;
+  --tims-risk-high: #c2410c;
+  --tims-risk-critical: #b91c1c;
+
+  --tims-success: #047857;
+  --tims-warning: #b45309;
+  --tims-danger: #b91c1c;
+
+  --tims-map-tile-filter: none;
+}
+
+.dark {
+  color-scheme: dark;
+
+  --tims-bg: #05080f;
+  --tims-bg-grid: #101a2c;
+  --tims-surface: #0a111f;
+  --tims-surface-2: #0f1929;
+  --tims-surface-3: #152238;
+  --tims-border: #1b2942;
+  --tims-border-strong: #2a3c5c;
+
+  --tims-fg: #e8eefa;
+  --tims-fg-muted: #8fa1bd;
+  --tims-fg-subtle: #64758f;
+
+  --tims-primary: #22d3ee;
+  --tims-primary-fg: #041018;
+  --tims-primary-soft: #0b3d4a;
+
+  --tims-risk-low: #38bdf8;
+  --tims-risk-medium: #fbbf24;
+  --tims-risk-high: #fb923c;
+  --tims-risk-critical: #f87171;
+
+  --tims-success: #34d399;
+  --tims-warning: #fbbf24;
+  --tims-danger: #f87171;
+
+  /* Keeps the OSM raster basemap from glowing white inside a dark console. */
+  --tims-map-tile-filter: brightness(0.62) invert(1) contrast(3) hue-rotate(200deg) saturate(0.25) brightness(0.75);
+}
+
+@theme inline {
+  --color-bg: var(--tims-bg);
+  --color-grid: var(--tims-bg-grid);
+  --color-surface: var(--tims-surface);
+  --color-surface-2: var(--tims-surface-2);
+  --color-surface-3: var(--tims-surface-3);
+  --color-line: var(--tims-border);
+  --color-line-strong: var(--tims-border-strong);
+
+  --color-fg: var(--tims-fg);
+  --color-fg-muted: var(--tims-fg-muted);
+  --color-fg-subtle: var(--tims-fg-subtle);
+
+  --color-primary: var(--tims-primary);
+  --color-primary-fg: var(--tims-primary-fg);
+  --color-primary-soft: var(--tims-primary-soft);
+
+  --color-risk-low: var(--tims-risk-low);
+  --color-risk-medium: var(--tims-risk-medium);
+  --color-risk-high: var(--tims-risk-high);
+  --color-risk-critical: var(--tims-risk-critical);
+
+  --color-success: var(--tims-success);
+  --color-warning: var(--tims-warning);
+  --color-danger: var(--tims-danger);
+
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-mono-data), ui-monospace, 'SFMono-Regular', monospace;
+}
+
+* {
+  border-color: var(--tims-border);
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background-color: var(--tims-bg);
+  color: var(--tims-fg);
+  font-family: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Faint survey grid — reads as a chart substrate rather than decoration. */
+.tims-grid-bg {
+  background-image:
+    linear-gradient(to right, var(--tims-bg-grid) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--tims-bg-grid) 1px, transparent 1px);
+  background-size: 48px 48px;
+}
+
+.tims-scan-line {
+  background: linear-gradient(90deg, transparent, var(--tims-primary), transparent);
+  opacity: 0.5;
+}
+
+/* Numeric data (coordinates, temperatures, IDs) is always tabular mono. */
+.tims-data {
+  font-family: var(--font-mono-data), ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--tims-border-strong);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--tims-fg-subtle);
+  background-clip: content-box;
+}
+
+:focus-visible {
+  outline: 2px solid var(--tims-primary);
+  outline-offset: 2px;
+}
+
+/* --- Leaflet overrides ---------------------------------------------------- */
+
+.leaflet-container {
+  background: var(--tims-surface-2);
+  font-family: var(--font-inter), sans-serif;
+  z-index: 0;
+}
+
+.dark .leaflet-tile-pane {
+  filter: var(--tims-map-tile-filter);
+}
+
+.leaflet-popup-content-wrapper {
+  background: var(--tims-surface);
+  color: var(--tims-fg);
+  border: 1px solid var(--tims-border-strong);
+  border-radius: 10px;
+  box-shadow: 0 18px 40px -12px rgb(0 0 0 / 0.45);
+  padding: 0;
+}
+
+.leaflet-popup-content {
+  margin: 0;
+  width: auto !important;
+  min-width: 268px;
+}
+
+.leaflet-popup-tip {
+  background: var(--tims-surface);
+  border: 1px solid var(--tims-border-strong);
+}
+
+.leaflet-popup-close-button {
+  color: var(--tims-fg-subtle) !important;
+  padding: 8px 8px 0 0 !important;
+}
+
+.leaflet-control-zoom a {
+  background: var(--tims-surface) !important;
+  color: var(--tims-fg) !important;
+  border-color: var(--tims-border) !important;
+}
+.leaflet-control-zoom a:hover {
+  background: var(--tims-surface-3) !important;
+}
+
+.leaflet-control-attribution {
+  background: color-mix(in srgb, var(--tims-surface) 82%, transparent) !important;
+  color: var(--tims-fg-subtle) !important;
+  font-size: 10px !important;
+}
+.leaflet-control-attribution a {
+  color: var(--tims-fg-muted) !important;
+}
+
+/* Marker glyphs are plain divIcons so they can be styled from CSS. */
+.tims-marker {
+  display: grid;
+  place-items: center;
+  border-radius: 9999px;
+  border: 2px solid var(--tims-surface);
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 0.25);
+}
+
+.tims-marker-pulse::after {
+  content: '';
+  position: absolute;
+  inset: -6px;
+  border-radius: 9999px;
+  border: 1px solid currentColor;
+  opacity: 0.45;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -1,0 +1,29 @@
+# Local PostgreSQL + PostGIS for TIMS development.
+#
+#   docker compose up -d
+#   cd backend && npm run prisma:deploy && npm run db:seed
+#
+# The matching connection string is:
+#   DATABASE_URL="postgresql://tims:tims@localhost:5432/tims?schema=public"
+
+services:
+  postgis:
+    image: postgis/postgis:16-3.4
+    container_name: tims-postgis
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: tims
+      POSTGRES_PASSWORD: tims
+      POSTGRES_DB: tims
+    ports:
+      - '5432:5432'
+    volumes:
+      - tims-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U tims -d tims']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  tims-pgdata:

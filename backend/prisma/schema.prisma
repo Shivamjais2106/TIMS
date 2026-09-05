@@ -1,0 +1,182 @@
+// TIMS — Thermal Intelligence & Monitoring System
+// Prisma schema for PostgreSQL + PostGIS.
+//
+// Geometry note: latitude/longitude are stored as plain Float columns so the
+// schema stays portable and fully typed. True geospatial work (radius search,
+// distance, point-in-polygon) is executed with PostGIS through raw SQL in
+// src/services/geo.service.ts, accelerated by the functional GiST indexes
+// created in prisma/migrations/*_postgis_geospatial/migration.sql.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum Role {
+  ADMIN
+  ANALYST
+  VIEWER
+}
+
+enum EventType {
+  INDUSTRIAL_FIRE
+  GAS_FLARE
+  AGRICULTURAL_FIRE
+  FOREST_FIRE
+  MINING_ACTIVITY
+  OTHER
+}
+
+enum FacilityType {
+  REFINERY
+  PETROCHEMICAL
+  POWER_PLANT
+  STEEL
+  MINING
+  LNG_TERMINAL
+  OTHER
+}
+
+enum RiskLevel {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum Severity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+/// Where a hotspot record originated. MANUAL entries are analyst-created.
+enum HotspotSource {
+  VIIRS_SNPP_NRT
+  VIIRS_NOAA20_NRT
+  MODIS_NRT
+  LANDSAT_NRT
+  MANUAL
+  MOCK
+}
+
+// ---------------------------------------------------------------------------
+// Models
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  role         Role     @default(VIEWER)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  acknowledgedAlerts Alert[] @relation("AlertAcknowledgedBy")
+
+  @@index([role])
+  @@map("users")
+}
+
+model IndustrialFacility {
+  id        String       @id @default(cuid())
+  name      String
+  type      FacilityType @default(OTHER)
+  latitude  Float
+  longitude Float
+  /// Human readable place, e.g. "Jamnagar, Gujarat".
+  location  String
+  riskLevel RiskLevel    @default(MEDIUM)
+  /// Operating company, when known (OSM `operator` tag).
+  operator  String?
+  /// Stable upstream id used to make OSM/Overpass syncs idempotent, e.g. "way/12345".
+  osmId     String?      @unique
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  hotspots Hotspot[]
+
+  @@index([type])
+  @@index([riskLevel])
+  @@index([latitude, longitude])
+  @@map("industrial_facilities")
+}
+
+model Hotspot {
+  id                    String        @id @default(cuid())
+  latitude              Float
+  longitude             Float
+  detectedAt            DateTime
+  /// Detection confidence, normalised to 0-100 across all FIRMS products.
+  confidence            Int
+  /// Brightness temperature in Kelvin (FIRMS `bright_ti4` / `brightness`).
+  brightnessTemperature Float
+  eventType             EventType     @default(OTHER)
+  /// Consecutive days this location has been detected. 1 = single pass.
+  persistenceDays       Int           @default(1)
+  /// Composite 0-100 score produced by src/utils/risk.ts.
+  riskScore             Float         @default(0)
+  /// Bucketed riskScore, denormalised so list/aggregate queries stay cheap.
+  riskLevel             RiskLevel     @default(LOW)
+  source                HotspotSource @default(MOCK)
+
+  /// Fire Radiative Power in MW — the primary industrial-vs-vegetation signal.
+  frp        Float?
+  satellite  String?
+  /// "D" (day) or "N" (night) overpass.
+  dayNight   String?
+  /// Administrative region used for grouping in analytics.
+  region     String?
+  /// Upstream FIRMS identity (satellite + acq time + rounded coords) for de-duplication.
+  externalId String? @unique
+
+  industrialFacilityId String?
+  industrialFacility   IndustrialFacility? @relation(fields: [industrialFacilityId], references: [id], onDelete: SetNull)
+  /// Great-circle distance in metres to `industrialFacility`, computed by PostGIS at ingest.
+  distanceToFacilityM  Float?
+
+  alerts Alert[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([detectedAt])
+  @@index([eventType])
+  @@index([riskLevel])
+  @@index([industrialFacilityId])
+  @@index([latitude, longitude])
+  @@map("hotspots")
+}
+
+model Alert {
+  id        String   @id @default(cuid())
+  title     String
+  message   String
+  severity  Severity @default(MEDIUM)
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  hotspotId String?
+  hotspot   Hotspot? @relation(fields: [hotspotId], references: [id], onDelete: Cascade)
+
+  acknowledgedById String?
+  acknowledgedBy   User?     @relation("AlertAcknowledgedBy", fields: [acknowledgedById], references: [id], onDelete: SetNull)
+  acknowledgedAt   DateTime?
+
+  @@index([isRead])
+  @@index([severity])
+  @@index([createdAt])
+  @@index([hotspotId])
+  @@map("alerts")
+}
