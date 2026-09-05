@@ -12,6 +12,7 @@ import authRoutes from './auth.routes';
 import geoRoutes from './geo.routes';
 import hotspotRoutes from './hotspot.routes';
 import industryRoutes from './industry.routes';
+import jobsRoutes from './jobs.routes';
 
 const router = Router();
 
@@ -59,5 +60,6 @@ router.use('/industries', industryRoutes);
 router.use('/alerts', alertRoutes);
 router.use('/analytics', analyticsRoutes);
 router.use('/geo', geoRoutes);
+router.use('/jobs', jobsRoutes);
 
 export default router;
