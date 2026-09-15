@@ -1,67 +1,78 @@
 import type { Metadata, Viewport } from 'next';
-import { Inter, JetBrains_Mono } from 'next/font/google';
+import { IBM_Plex_Mono, IBM_Plex_Sans } from 'next/font/google';
 import { AuthProvider } from '@/hooks/useAuth';
-import { ThemeProvider } from '@/hooks/useTheme';
+import { RealtimeProvider } from '@/hooks/useRealtime';
+import { THEME_BOOTSTRAP, ThemeProvider } from '@/hooks/useTheme';
+import { PILOT } from '@/lib/bhopal';
 import './globals.css';
 
-const inter = Inter({
-  variable: '--font-inter',
+/**
+ * IBM Plex Sans for prose, IBM Plex Mono for every number, coordinate,
+ * timestamp and identifier. No system sans-serif is used in normal rendering —
+ * the generic fallbacks exist only for the moment before the webfont resolves.
+ */
+const plexSans = IBM_Plex_Sans({
+  variable: '--font-plex-sans',
   subsets: ['latin'],
+  weight: ['400', '500', '600'],
   display: 'swap',
 });
 
-const jetbrainsMono = JetBrains_Mono({
-  variable: '--font-mono-data',
+const plexMono = IBM_Plex_Mono({
+  variable: '--font-plex-mono',
   subsets: ['latin'],
+  weight: ['400', '500', '600'],
   display: 'swap',
 });
 
 export const metadata: Metadata = {
   title: {
-    default: 'TIMS — Thermal Intelligence & Monitoring System',
+    default: `TIMS — Thermal Intelligence & Monitoring System · ${PILOT.label}`,
     template: '%s · TIMS',
   },
   description:
-    'AI-assisted detection and classification of industrial fires and persistent thermal sources using NASA FIRMS, OpenStreetMap and satellite data.',
+    'Detect, understand and assess thermal anomalies over Bhopal using NASA FIRMS, ' +
+    'OpenStreetMap industrial geometry and PostGIS spatial analysis. Decision support, ' +
+    'not an official emergency alerting system.',
   applicationName: 'TIMS',
-  keywords: ['NASA FIRMS', 'thermal anomaly', 'industrial fire', 'gas flare', 'PostGIS', 'remote sensing'],
+  keywords: [
+    'NASA FIRMS',
+    'thermal anomaly',
+    'Bhopal',
+    'industrial fire',
+    'PostGIS',
+    'disaster management',
+    'SIH26162',
+  ],
 };
 
 export const viewport: Viewport = {
   themeColor: [
-    { media: '(prefers-color-scheme: light)', color: '#f4f7fb' },
-    { media: '(prefers-color-scheme: dark)', color: '#05080f' },
+    { media: '(prefers-color-scheme: dark)', color: '#0a0c0e' },
+    { media: '(prefers-color-scheme: light)', color: '#f7f6f4' },
   ],
+  colorScheme: 'dark light',
 };
-
-/**
- * Applies the stored theme before first paint.
- *
- * Without this the page would render light and then snap to dark once React
- * hydrates, which looks broken on every reload.
- */
-const THEME_BOOTSTRAP = `
-(function () {
-  try {
-    var stored = localStorage.getItem('tims-theme');
-    var prefersLight = window.matchMedia('(prefers-color-scheme: light)').matches;
-    var theme = stored || (prefersLight ? 'light' : 'dark');
-    if (theme === 'dark') document.documentElement.classList.add('dark');
-  } catch (error) {
-    document.documentElement.classList.add('dark');
-  }
-})();
-`;
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" suppressHydrationWarning className={`${inter.variable} ${jetbrainsMono.variable}`}>
+    // suppressHydrationWarning: the bootstrap script below sets data-theme
+    // before React hydrates, so the server and client markup differ by design.
+    <html
+      lang="en"
+      data-theme="dark"
+      suppressHydrationWarning
+      className={`${plexSans.variable} ${plexMono.variable}`}
+    >
       <head>
+        {/* Runs before first paint so a stored light theme does not flash dark. */}
         <script dangerouslySetInnerHTML={{ __html: THEME_BOOTSTRAP }} />
       </head>
-      <body className="min-h-full antialiased">
+      <body className="min-h-full bg-bg text-fg antialiased">
         <ThemeProvider>
-          <AuthProvider>{children}</AuthProvider>
+          <AuthProvider>
+            <RealtimeProvider>{children}</RealtimeProvider>
+          </AuthProvider>
         </ThemeProvider>
       </body>
     </html>

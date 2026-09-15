@@ -1,16 +1,9 @@
 import { clearToken, getToken } from './auth';
 
-export const API_BASE_URL = (process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api').replace(/\/$/, '');
-
-/**
- * Demo mode.
- *
- * When the backend or database is not running, setting
- * NEXT_PUBLIC_DEMO_MODE=true makes the dashboard fall back to a bundled sample
- * dataset and bypass the route guard, so the UI can still be presented.
- * It is off by default and must never be enabled in a real deployment.
- */
-export const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE === 'true';
+export const API_BASE_URL = (process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api').replace(
+  /\/$/,
+  '',
+);
 
 export interface ApiEnvelope<T> {
   success: boolean;
@@ -44,7 +37,7 @@ export interface RequestOptions extends Omit<RequestInit, 'body'> {
   /**
    * Appended as a query string. Typed as `object` rather than
    * `Record<string, unknown>` so callers can pass their own filter interfaces
-   * without adding an index signature to every one of them.
+   * without adding an index signature to each one.
    */
   query?: object;
   /** Set false for endpoints that must work signed out. */
@@ -67,13 +60,15 @@ function buildUrl(path: string, query?: object): string {
   return url.toString();
 }
 
-/** Result of a request, including the `meta` envelope for paginated endpoints. */
 export interface ApiResult<T> {
   data: T;
   meta: Record<string, unknown>;
 }
 
-export async function requestWithMeta<T>(path: string, options: RequestOptions = {}): Promise<ApiResult<T>> {
+export async function requestWithMeta<T>(
+  path: string,
+  options: RequestOptions = {},
+): Promise<ApiResult<T>> {
   const { body, query, auth = true, headers, ...rest } = options;
 
   const requestHeaders = new Headers(headers);
@@ -133,29 +128,27 @@ export const api = {
     request<T>(path, { ...options, method: 'POST', body }),
   patch: <T>(path: string, body?: unknown, options?: RequestOptions) =>
     request<T>(path, { ...options, method: 'PATCH', body }),
-  delete: <T>(path: string, options?: RequestOptions) => request<T>(path, { ...options, method: 'DELETE' }),
+  delete: <T>(path: string, options?: RequestOptions) =>
+    request<T>(path, { ...options, method: 'DELETE' }),
 };
 
 /**
- * Runs `call`, falling back to bundled sample data when the API is unreachable
- * *and* demo mode is on.
+ * Turns any thrown value into a message worth showing a user.
  *
- * Only NetworkError triggers the fallback — a 4xx/5xx from a live API is a real
- * error and is rethrown, so a broken backend never hides behind fake numbers.
+ * There is deliberately no client-side mock fallback. An earlier version of
+ * this file swapped in a bundled sample dataset when the API was unreachable,
+ * which meant a broken backend produced a dashboard full of invented
+ * detections. Every figure in TIMS must come from a real API response, so an
+ * unreachable API now surfaces as an error the user can act on.
+ *
+ * DEMO_MODE still exists, but it is a *server* setting: the backend decides
+ * what to serve and flags it, and the UI renders a persistent "DEMO DATA"
+ * banner. The client never invents records on its own.
  */
-export async function withDemoFallback<T>(call: () => Promise<T>, fallback: () => T): Promise<T> {
-  try {
-    return await call();
-  } catch (error) {
-    if (DEMO_MODE && error instanceof NetworkError) return fallback();
-    throw error;
-  }
-}
-
 export function describeError(error: unknown): string {
   if (error instanceof ApiError) return error.message;
   if (error instanceof NetworkError) {
-    return 'Cannot reach the TIMS API. Make sure the backend is running on ' + API_BASE_URL;
+    return `Cannot reach the TIMS API at ${API_BASE_URL}. Check that the backend is running.`;
   }
   if (error instanceof Error) return error.message;
   return 'Something went wrong';

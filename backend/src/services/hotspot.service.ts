@@ -3,7 +3,13 @@ import { prisma } from '../config/prisma';
 import { Prisma } from '../generated/prisma/client';
 import { ApiError } from '../utils/ApiError';
 import { createLogger } from '../utils/logger';
-import { assessHotspot, PERSISTENT_SOURCE_DAYS, toRiskLevel } from '../utils/risk';
+import {
+  assessRisk,
+  classifyByRules,
+  PERSISTENT_SOURCE_DAYS,
+  toEventType,
+  toRiskLevel,
+} from '../utils/risk';
 import type { CreateHotspotInput, ListHotspotsQuery, UpdateHotspotInput } from '../validators/hotspot.schema';
 import { bboxWhere, findNearestFacility, type NearbyFacility } from './geo.service';
 
@@ -109,6 +115,22 @@ export async function resolveNearestFacility(
   }
 }
 
+/**
+ * Classifies and scores an analyst-entered hotspot.
+ *
+ * Analyst entries deliberately do NOT call the ML service: a manually created
+ * record is an assertion by a human, and running it through the model would
+ * produce a prediction that the UI would then attribute to the model rather
+ * than to the analyst. The transparent rule engine is used instead.
+ */
+function assessSignature(signature: Parameters<typeof assessRisk>[0]): {
+  eventType: ReturnType<typeof toEventType>;
+  riskScore: number;
+} {
+  const risk = assessRisk(signature);
+  return { eventType: toEventType(classifyByRules(signature)), riskScore: risk.score };
+}
+
 export async function createHotspot(input: CreateHotspotInput): Promise<HotspotWithFacility> {
   // An explicit facility id wins; otherwise let PostGIS find the closest one.
   let facilityId = input.industrialFacilityId ?? null;
@@ -128,7 +150,7 @@ export async function createHotspot(input: CreateHotspotInput): Promise<HotspotW
     }
   }
 
-  const assessment = assessHotspot({
+  const assessment = assessSignature({
     brightnessTemperature: input.brightnessTemperature,
     frp: input.frp ?? null,
     confidence: input.confidence,
@@ -200,7 +222,7 @@ export async function updateHotspot(id: string, input: UpdateHotspotInput): Prom
   const frp = input.frp ?? existing.frp;
   const dayNight = input.dayNight ?? existing.dayNight;
 
-  const assessment = assessHotspot({
+  const assessment = assessSignature({
     brightnessTemperature,
     frp,
     confidence,

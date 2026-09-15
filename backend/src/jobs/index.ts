@@ -4,6 +4,7 @@ import { createLogger } from '../utils/logger';
 import { scheduleFirmsIngest } from './firmsIngest.job';
 import { scheduleOsmSync } from './osmSync.job';
 import { schedulePersistenceRecompute } from './persistence.job';
+import { scheduleWeather } from './weather.job';
 
 const log = createLogger('jobs');
 
@@ -21,10 +22,21 @@ export function registerJobs(): void {
     return;
   }
 
-  tasks = [scheduleFirmsIngest(), schedulePersistenceRecompute()];
+  // FIRMS ingest every 30 minutes is the pilot's heartbeat (Part 4, step 11).
+  // Persistence recompute and weather sampling are offset from it so three
+  // jobs never contend for the same database connection burst.
+  tasks = [scheduleFirmsIngest(), schedulePersistenceRecompute(), scheduleWeather()];
+
+  // Overpass is rate-limited and facility footprints change on a timescale of
+  // months, so this runs weekly rather than on the ingest cadence.
   if (env.OSM_ENABLED) tasks.push(scheduleOsmSync());
 
-  log.info(`${tasks.length} scheduled job(s) registered`);
+  log.info(`${tasks.length} scheduled job(s) registered`, {
+    firms: env.FIRMS_CRON_SCHEDULE,
+    persistence: env.ANALYTICS_CRON_SCHEDULE,
+    weather: env.WEATHER_CRON_SCHEDULE,
+    osm: env.OSM_ENABLED ? env.OSM_CRON_SCHEDULE : 'disabled',
+  });
 }
 
 /** Stops all jobs — used during graceful shutdown. */
@@ -36,3 +48,4 @@ export async function stopJobs(): Promise<void> {
 export { firmsIngestTask } from './firmsIngest.job';
 export { osmSyncTask } from './osmSync.job';
 export { persistenceTask } from './persistence.job';
+export { weatherTask } from './weather.job';

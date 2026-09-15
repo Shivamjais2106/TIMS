@@ -1,16 +1,45 @@
+# Dependencies
 node_modules/
+
+# Environment — never commit real credentials (FIRMS_MAP_KEY, JWT_SECRET, DB)
 .env
 .env.local
 .env.*.local
+
+# Build output
 dist/
 .next/
 out/
 build/
-coverage/
+*.tsbuildinfo
+
+# Prisma generated client
+backend/src/generated/
+
+# ML pipeline artefacts.
+#
+# Intermediate CSVs are regenerable from the database with `npm run ml:train`
+# and would otherwise commit thousands of rows of exported data on every run.
+ml/data/*.csv
+
+# The trained model and its metadata ARE committed: ml-service bakes them into
+# its image, so the repository must contain a runnable artefact. The copy under
+# ml-service/models/ is synced from ml/models/.
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Logs and coverage
 *.log
 npm-debug.log*
+coverage/
+
+# Editors and OS
 .DS_Store
 Thumbs.db
 .idea/
 .vscode/
-backend/src/generated/

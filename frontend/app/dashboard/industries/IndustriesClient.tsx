@@ -1,307 +1,319 @@
 'use client';
 
-import { Building2, MapPin, Search, X } from 'lucide-react';
-import Link from 'next/link';
-import { useSearchParams } from 'next/navigation';
-import { useEffect, useState } from 'react';
-import { RiskBadge } from '@/components/ui/Badge';
-import { Card, CardBody, CardHeader } from '@/components/ui/Card';
-import { DataTable, type Column } from '@/components/ui/DataTable';
-import { EmptyState, ErrorState } from '@/components/ui/EmptyState';
-import { Input, Select } from '@/components/ui/Input';
-import { LoadingState } from '@/components/ui/LoadingState';
+import { useState } from 'react';
+import { BarList } from '@/components/charts';
+import { Header } from '@/components/layout/Header';
+import { DataTable, Pagination, type Column } from '@/components/ui/DataTable';
+import { Caveat, RiskBadge } from '@/components/ui/Indicators';
+import { SearchInput, Select } from '@/components/ui/Input';
+import { Panel, PanelBody, PanelHeader } from '@/components/ui/Panel';
+import { StatCard, StatRow } from '@/components/ui/StatCard';
+import { EmptyState, ErrorState, LoadingState, NoticeBanner } from '@/components/ui/States';
 import { useApi } from '@/hooks/useApi';
 import { useDebounce } from '@/hooks/useDebounce';
-import { EVENT_TYPE_META, FACILITY_TYPES, FACILITY_TYPE_META, RISK_LEVELS } from '@/lib/constants';
-import { formatCoordinatePair, formatDateTime, formatDistance, formatNumber } from '@/lib/format';
-import { industryService, type IndustryFilters } from '@/services/industry.service';
-import type { FacilityType, IndustrialFacility, RiskLevel } from '@/types';
+import { useStaggerIn } from '@/hooks/useGsap';
+import { useNavOpener } from '../DashboardShell';
+import { FACILITY_TYPES, FACILITY_TYPE_META } from '@/lib/constants';
+import { formatCoordinatePair, shortId } from '@/lib/format';
+import { industryService } from '@/services';
+import type { IndustrialFacility } from '@/types';
 
-const COLUMNS: Column<IndustrialFacility>[] = [
-  {
-    key: 'name',
-    header: 'Facility',
-    render: (facility) => {
-      const meta = FACILITY_TYPE_META[facility.type];
-      return (
-        <div className="flex items-center gap-3">
-          <span
-            className="grid size-7 shrink-0 place-items-center rounded-md text-[10px] font-bold text-white"
-            style={{ backgroundColor: meta.color }}
-            aria-hidden
-          >
-            {meta.glyph}
-          </span>
-          <div className="min-w-0">
-            <p className="truncate text-xs font-medium text-fg">{facility.name}</p>
-            <p className="truncate text-[10px] text-fg-subtle">{facility.operator ?? meta.label}</p>
-          </div>
-        </div>
-      );
-    },
-  },
-  {
-    key: 'type',
-    header: 'Type',
-    hideOnMobile: true,
-    render: (facility) => <span className="text-xs text-fg-muted">{FACILITY_TYPE_META[facility.type].label}</span>,
-  },
-  {
-    key: 'location',
-    header: 'Location',
-    hideOnMobile: true,
-    render: (facility) => (
-      <div className="min-w-0">
-        <p className="truncate text-xs text-fg">{facility.location}</p>
-        <p className="tims-data truncate text-[10px] text-fg-subtle">
-          {formatCoordinatePair(facility.latitude, facility.longitude)}
-        </p>
-      </div>
-    ),
-  },
-  {
-    key: 'events',
-    header: 'Detections',
-    hideOnMobile: true,
-    render: (facility) => (
-      <span className="tims-data text-xs text-fg-muted">{formatNumber(facility._count?.hotspots ?? 0)}</span>
-    ),
-  },
-  {
-    key: 'risk',
-    header: 'Risk',
-    render: (facility) => <RiskBadge level={facility.riskLevel} />,
-  },
-];
-
+/**
+ * Industrial facility register.
+ *
+ * Sourced entirely from OpenStreetMap. The page states that plainly, because
+ * OSM is community-maintained rather than an official register and roughly
+ * 85% of the industrial polygons in the pilot area carry no name tag.
+ */
 export function IndustriesClient() {
-  const searchParams = useSearchParams();
-  const focusId = searchParams.get('focus');
+  const openNav = useNavOpener();
+  const containerRef = useStaggerIn();
 
-  const [filters, setFilters] = useState<IndustryFilters>({
-    page: 1,
-    pageSize: 20,
-    withHotspotCount: true,
-    sortBy: 'name',
-    sortOrder: 'asc',
-  });
+  const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
-  const [selectedId, setSelectedId] = useState<string | null>(focusId);
-
+  const [type, setType] = useState('');
   const debouncedSearch = useDebounce(search, 350);
 
-  const list = useApi(
-    () => industryService.list({ ...filters, search: debouncedSearch || undefined }),
-    [JSON.stringify(filters), debouncedSearch],
+  const facilities = useApi(
+    () =>
+      industryService.list({
+        page,
+        pageSize: 40,
+        search: debouncedSearch || undefined,
+        type: type || undefined,
+      }),
+    [page, debouncedSearch, type],
   );
 
-  const detail = useApi(
-    () => (selectedId ? industryService.getById(selectedId) : Promise.resolve(null)),
-    [selectedId],
-  );
+  const summary = useApi(() => industryService.summary(), []);
 
-  useEffect(() => {
-    setSelectedId(focusId);
-  }, [focusId]);
+  const derivedNames = (facilities.data?.items ?? []).filter((facility) =>
+    facility.name.startsWith('Industrial zone '),
+  ).length;
 
-  function update(patch: Partial<IndustryFilters>) {
-    setFilters((current) => ({ ...current, ...patch, page: patch.page ?? 1 }));
-  }
+  const columns: Array<Column<IndustrialFacility>> = [
+    {
+      key: 'name',
+      header: 'Facility',
+      render: (row) => (
+        <span className="block">
+          <span className="block truncate text-[12px] text-fg">{row.name}</span>
+          {row.operator ? (
+            <span className="block truncate text-[10px] text-fg-subtle">{row.operator}</span>
+          ) : null}
+        </span>
+      ),
+    },
+    {
+      key: 'type',
+      header: 'Class',
+      width: '130px',
+      render: (row) => (
+        <span
+          className="tims-data text-[11px]"
+          style={{ color: FACILITY_TYPE_META[row.type].color }}
+        >
+          {FACILITY_TYPE_META[row.type].label}
+        </span>
+      ),
+    },
+    {
+      key: 'risk',
+      header: 'Hazard class',
+      width: '110px',
+      render: (row) => <RiskBadge level={row.riskLevel} />,
+    },
+    {
+      key: 'detections',
+      header: 'Detections',
+      numeric: true,
+      width: '92px',
+      render: (row) => row._count?.hotspots ?? 0,
+    },
+    {
+      key: 'location',
+      header: 'Area',
+      width: '120px',
+      secondary: true,
+      render: (row) => <span className="text-[11px] text-fg-muted">{row.location}</span>,
+    },
+    {
+      key: 'position',
+      header: 'Position',
+      numeric: true,
+      width: '150px',
+      secondary: true,
+      render: (row) => (
+        <span className="text-[10px] text-fg-muted">
+          {formatCoordinatePair(row.latitude, row.longitude)}
+        </span>
+      ),
+    },
+    {
+      key: 'osm',
+      header: 'OSM id',
+      numeric: true,
+      width: '100px',
+      secondary: true,
+      render: (row) =>
+        row.osmId ? (
+          <a
+            href={`https://www.openstreetmap.org/${row.osmId}`}
+            target="_blank"
+            rel="noreferrer noopener"
+            className="text-[10px] text-fg-muted underline-offset-2 hover:text-fg hover:underline"
+          >
+            {row.osmId}
+          </a>
+        ) : (
+          <span className="text-[10px] text-fg-subtle">analyst entry</span>
+        ),
+    },
+  ];
 
   return (
-    <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_340px]">
-      <div className="space-y-4">
-        <Card>
-          <div className="flex flex-wrap items-center gap-3 p-4">
-            <div className="min-w-[220px] flex-1">
-              <Input
-                name="facility-search"
-                placeholder="Search by name, location or operator"
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-                icon={<Search className="size-4" aria-hidden />}
-              />
-            </div>
+    <>
+      <Header
+        title="Industrial facility register"
+        subtitle={`${summary.data?.total ?? 0} sites mapped inside the pilot area`}
+        onOpenNav={openNav}
+      />
 
-            <Select
-              name="type"
-              value={filters.type ?? ''}
-              onChange={(event) => update({ type: (event.target.value || undefined) as FacilityType | undefined })}
-              className="w-auto min-w-[160px]"
-            >
-              <option value="">All facility types</option>
-              {FACILITY_TYPES.map((type) => (
-                <option key={type} value={type}>
-                  {FACILITY_TYPE_META[type].label}
-                </option>
-              ))}
-            </Select>
-
-            <Select
-              name="riskLevel"
-              value={filters.riskLevel ?? ''}
-              onChange={(event) => update({ riskLevel: (event.target.value || undefined) as RiskLevel | undefined })}
-              className="w-auto min-w-[140px]"
-            >
-              <option value="">All risk levels</option>
-              {RISK_LEVELS.map((level) => (
-                <option key={level} value={level}>
-                  {level.charAt(0) + level.slice(1).toLowerCase()}
-                </option>
-              ))}
-            </Select>
-          </div>
-        </Card>
-
-        <Card className="overflow-hidden">
-          <CardHeader
-            title={list.data ? `${formatNumber(list.data.meta.total)} facilities` : 'Facilities'}
-            description="Sites monitored for thermal activity"
+      <div ref={containerRef} className="flex-1 overflow-y-auto">
+        <StatRow className="border-b border-line">
+          <StatCard
+            label="Mapped sites"
+            value={summary.data?.total ?? 0}
+            accent="rust"
+            footnote="from OpenStreetMap"
           />
-          {list.error ? (
-            <ErrorState message={list.error} onRetry={list.refetch} />
-          ) : (
-            <DataTable
-              columns={COLUMNS}
-              rows={list.data?.items ?? []}
-              rowKey={(facility) => facility.id}
-              loading={list.loading}
-              onRowClick={(facility) => setSelectedId(facility.id)}
-              meta={list.data?.meta}
-              onPageChange={(page) => setFilters((current) => ({ ...current, page }))}
-              emptyTitle="No facilities match these filters"
-              emptyDescription="Run the OSM sync job or relax the filters above."
-            />
-          )}
-        </Card>
-      </div>
+          <StatCard
+            label="Power plants"
+            value={summary.data?.byType.find((row) => row.type === 'POWER_PLANT')?.count ?? 0}
+            accent="warn"
+          />
+          <StatCard
+            label="Refinery / petrochem"
+            value={
+              (summary.data?.byType.find((row) => row.type === 'REFINERY')?.count ?? 0) +
+              (summary.data?.byType.find((row) => row.type === 'PETROCHEMICAL')?.count ?? 0)
+            }
+            accent="rust"
+          />
+          <StatCard
+            label="Unclassified zones"
+            value={summary.data?.byType.find((row) => row.type === 'OTHER')?.count ?? 0}
+            accent="neutral"
+            footnote="landuse=industrial"
+          />
+        </StatRow>
 
-      {/* --- Facility profile -------------------------------------------------- */}
-      <aside className="xl:sticky xl:top-[84px] xl:self-start">
-        {!selectedId ? (
-          <Card>
-            <EmptyState
-              icon={Building2}
-              title="Select a facility"
-              description="Open any site to see its coordinates, hazard rating and the thermal detections attributed to it."
-              minHeight={240}
-            />
-          </Card>
-        ) : detail.loading ? (
-          <Card>
-            <LoadingState label="Loading facility" minHeight={240} />
-          </Card>
-        ) : detail.error ? (
-          <Card>
-            <ErrorState message={detail.error} onRetry={detail.refetch} />
-          </Card>
-        ) : detail.data ? (
-          <Card className="overflow-hidden">
-            <header className="flex items-start justify-between gap-3 border-b border-line px-5 py-4">
-              <div className="flex min-w-0 items-start gap-3">
-                <span
-                  className="grid size-9 shrink-0 place-items-center rounded-lg text-xs font-bold text-white"
-                  style={{ backgroundColor: FACILITY_TYPE_META[detail.data.type].color }}
-                  aria-hidden
+        <div className="p-3">
+          <NoticeBanner label="Data source" tone="info" className="tims-enter mb-3">
+            Facility geometry comes from OpenStreetMap via the Overpass API — community-maintained,
+            not an official register. MPPCB and Invest MP publish consent registers as documents
+            rather than geocoded feeds, so no official facility coordinates are loaded. Unnamed{' '}
+            <span className="tims-data">landuse=industrial</span> polygons are kept with a derived
+            label because they still carry real geometry that the distance-to-facility feature needs.
+          </NoticeBanner>
+
+          <div className="grid gap-3 xl:grid-cols-[1fr_280px]">
+            <Panel className="tims-enter">
+              <PanelHeader
+                label="Facility register"
+                meta={`${facilities.data?.meta.total ?? 0} records`}
+              />
+
+              <div className="flex flex-wrap items-end gap-2 border-b border-line bg-surface-2 px-3 py-2">
+                <SearchInput
+                  value={search}
+                  onChange={(value) => {
+                    setSearch(value);
+                    setPage(1);
+                  }}
+                  placeholder="Search name, operator or area"
+                  className="min-w-[200px] flex-1"
+                />
+                <Select
+                  label="Class"
+                  value={type}
+                  onChange={(event) => {
+                    setType(event.target.value);
+                    setPage(1);
+                  }}
+                  className="w-[170px]"
                 >
-                  {FACILITY_TYPE_META[detail.data.type].glyph}
-                </span>
-                <div className="min-w-0">
-                  <h2 className="truncate text-sm font-semibold text-fg">{detail.data.name}</h2>
-                  <p className="truncate text-[11px] text-fg-subtle">
-                    {FACILITY_TYPE_META[detail.data.type].label} · {detail.data.location}
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setSelectedId(null)}
-                className="grid size-6 shrink-0 place-items-center rounded-md text-fg-subtle hover:bg-surface-3"
-                aria-label="Close facility profile"
-              >
-                <X className="size-3.5" aria-hidden />
-              </button>
-            </header>
-
-            <CardBody className="space-y-4">
-              <dl className="grid grid-cols-2 gap-3">
-                <div>
-                  <dt className="text-[10px] uppercase tracking-wide text-fg-subtle">Hazard rating</dt>
-                  <dd className="mt-1">
-                    <RiskBadge level={detail.data.riskLevel} />
-                  </dd>
-                </div>
-                <div>
-                  <dt className="text-[10px] uppercase tracking-wide text-fg-subtle">Detections</dt>
-                  <dd className="tims-data mt-1 text-sm font-semibold text-fg">
-                    {formatNumber(detail.data._count?.hotspots ?? 0)}
-                  </dd>
-                </div>
-                <div className="col-span-2">
-                  <dt className="text-[10px] uppercase tracking-wide text-fg-subtle">Coordinates</dt>
-                  <dd className="tims-data mt-1 text-xs text-fg">
-                    {formatCoordinatePair(detail.data.latitude, detail.data.longitude)}
-                  </dd>
-                </div>
-                {detail.data.operator ? (
-                  <div className="col-span-2">
-                    <dt className="text-[10px] uppercase tracking-wide text-fg-subtle">Operator</dt>
-                    <dd className="mt-1 text-xs text-fg">{detail.data.operator}</dd>
-                  </div>
-                ) : null}
-                <div className="col-span-2">
-                  <dt className="text-[10px] uppercase tracking-wide text-fg-subtle">Registered</dt>
-                  <dd className="mt-1 text-xs text-fg-muted">{formatDateTime(detail.data.createdAt)}</dd>
-                </div>
-              </dl>
-
-              <div>
-                <p className="mb-2 text-[10px] uppercase tracking-wide text-fg-subtle">Recent detections</p>
-                {detail.data.hotspots.length === 0 ? (
-                  <p className="text-xs text-fg-muted">No thermal detections attributed to this site yet.</p>
-                ) : (
-                  <ul className="space-y-1.5">
-                    {detail.data.hotspots.map((hotspot) => (
-                      <li
-                        key={hotspot.id}
-                        className="flex items-center gap-2.5 rounded-lg border border-line bg-surface-2 px-2.5 py-2"
-                      >
-                        <span
-                          className="size-2 shrink-0 rounded-full"
-                          style={{ backgroundColor: EVENT_TYPE_META[hotspot.eventType].color }}
-                          aria-hidden
-                        />
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-[11px] font-medium text-fg">
-                            {EVENT_TYPE_META[hotspot.eventType].label}
-                          </p>
-                          <p className="tims-data truncate text-[10px] text-fg-subtle">
-                            {formatDateTime(hotspot.detectedAt)}
-                            {hotspot.distanceToFacilityM != null
-                              ? ` · ${formatDistance(hotspot.distanceToFacilityM)}`
-                              : ''}
-                          </p>
-                        </div>
-                        <span className="tims-data shrink-0 text-[11px] font-semibold text-fg-muted">
-                          {hotspot.riskScore.toFixed(0)}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
+                  <option value="">All classes</option>
+                  {FACILITY_TYPES.map((key) => (
+                    <option key={key} value={key}>
+                      {FACILITY_TYPE_META[key].label}
+                    </option>
+                  ))}
+                </Select>
               </div>
 
-              <Link
-                href={`/dashboard/map?focus=${detail.data.hotspots[0]?.id ?? ''}`}
-                className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-line bg-surface px-3 py-2 text-xs font-medium text-fg transition-colors hover:bg-surface-3"
-              >
-                <MapPin className="size-3.5" aria-hidden />
-                Show on map
-              </Link>
-            </CardBody>
-          </Card>
-        ) : null}
-      </aside>
-    </div>
+              {facilities.loading && !facilities.data ? (
+                <LoadingState label="Loading register" />
+              ) : facilities.error ? (
+                <div className="p-3">
+                  <ErrorState message={facilities.error} onRetry={facilities.refetch} />
+                </div>
+              ) : (facilities.data?.items.length ?? 0) === 0 ? (
+                <EmptyState
+                  title="No facilities match"
+                  detail="Run the OpenStreetMap sync if the register is empty."
+                />
+              ) : (
+                <>
+                  <DataTable
+                    columns={columns}
+                    rows={facilities.data?.items ?? []}
+                    rowKey={(row) => row.id}
+                  />
+                  {facilities.data?.meta ? (
+                    <Pagination
+                      page={facilities.data.meta.page}
+                      pageSize={facilities.data.meta.pageSize}
+                      total={facilities.data.meta.total}
+                      totalPages={facilities.data.meta.totalPages}
+                      onPageChange={setPage}
+                    />
+                  ) : null}
+                </>
+              )}
+            </Panel>
+
+            <div className="space-y-3">
+              <Panel className="tims-enter">
+                <PanelHeader label="By class" />
+                <PanelBody>
+                  {summary.loading ? (
+                    <LoadingState />
+                  ) : (
+                    <BarList
+                      items={(summary.data?.byType ?? []).map((row) => ({
+                        label: FACILITY_TYPE_META[row.type].label,
+                        value: row.count,
+                        color: FACILITY_TYPE_META[row.type].color,
+                      }))}
+                    />
+                  )}
+                </PanelBody>
+              </Panel>
+
+              <Panel className="tims-enter">
+                <PanelHeader label="Most detections nearby" />
+                <PanelBody>
+                  {summary.loading ? (
+                    <LoadingState />
+                  ) : (summary.data?.topFacilities.length ?? 0) === 0 ? (
+                    <p className="py-3 text-center text-[11px] text-fg-subtle">
+                      No facility has a linked detection yet.
+                    </p>
+                  ) : (
+                    <ul className="divide-y divide-line">
+                      {summary.data?.topFacilities.slice(0, 8).map((facility) => (
+                        <li key={facility.id} className="flex items-baseline gap-2 py-1.5">
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-[11px] text-fg">
+                              {facility.name}
+                            </span>
+                            <span className="block truncate text-[10px] text-fg-subtle">
+                              {FACILITY_TYPE_META[facility.type].label}
+                            </span>
+                          </span>
+                          <span className="tims-data flex-none text-[11px] text-fg-muted">
+                            {facility.hotspotCount}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  <Caveat className="mt-2">
+                    A detection near a facility does not establish that the facility caused it.
+                  </Caveat>
+                </PanelBody>
+              </Panel>
+
+              {derivedNames > 0 ? (
+                <Panel className="tims-enter">
+                  <PanelHeader label="Naming" />
+                  <PanelBody>
+                    <p className="text-[11px] leading-relaxed text-fg-muted">
+                      <span className="tims-data text-fg">{derivedNames}</span> of the{' '}
+                      <span className="tims-data text-fg">
+                        {facilities.data?.items.length ?? 0}
+                      </span>{' '}
+                      rows on this page have a derived label rather than an OSM{' '}
+                      <span className="tims-data">name</span> tag.
+                    </p>
+                  </PanelBody>
+                </Panel>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      </div>
+    </>
   );
 }

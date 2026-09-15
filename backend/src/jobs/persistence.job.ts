@@ -1,6 +1,9 @@
 import cron, { type ScheduledTask } from 'node-cron';
 import { env } from '../config/env';
-import { recomputePersistence } from '../services/integrations/firms/firms.service';
+import {
+  recomputeBoundaryFlags,
+  recomputePersistence,
+} from '../services/integrations/firms/firms.service';
 import { createLogger } from '../utils/logger';
 
 const log = createLogger('job:persistence');
@@ -12,7 +15,8 @@ let running = false;
  *
  * Runs separately from ingest because persistence is only knowable in
  * hindsight: a detection recorded today becomes "persistent" only once
- * tomorrow's pass confirms it.
+ * tomorrow's pass confirms it. The boundary flag is refreshed in the same pass
+ * so a reloaded polygon takes effect without re-fetching from NASA.
  */
 export async function persistenceTask(): Promise<void> {
   if (running) {
@@ -23,7 +27,10 @@ export async function persistenceTask(): Promise<void> {
   running = true;
   try {
     const { examined, updated } = await recomputePersistence();
-    log.info(`Recompute ok: ${updated}/${examined} hotspots re-scored`);
+    const boundaryUpdated = await recomputeBoundaryFlags();
+    log.info(
+      `Recompute ok: ${updated}/${examined} persistence updated, ${boundaryUpdated} boundary flag(s) corrected`,
+    );
   } catch (error) {
     log.error('Persistence recompute failed', { error: error instanceof Error ? error.message : error });
   } finally {
@@ -32,6 +39,6 @@ export async function persistenceTask(): Promise<void> {
 }
 
 export function schedulePersistenceRecompute(): ScheduledTask {
-  log.info(`Scheduled with cron "${env.ANALYTICS_CRON_SCHEDULE}"`);
+  log.info(`Scheduled with cron "${env.ANALYTICS_CRON_SCHEDULE}" (Asia/Kolkata)`);
   return cron.schedule(env.ANALYTICS_CRON_SCHEDULE, persistenceTask, { timezone: 'Asia/Kolkata' });
 }

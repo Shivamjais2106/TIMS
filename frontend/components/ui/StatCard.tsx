@@ -1,79 +1,93 @@
-import { ArrowDownRight, ArrowRight, ArrowUpRight, type LucideIcon } from 'lucide-react';
-import { formatNumber, formatSignedPercent } from '@/lib/format';
+'use client';
+
+import type { ReactNode } from 'react';
+import { useCountUp } from '@/hooks/useGsap';
 import { cn } from '@/lib/utils';
-import type { StatDelta } from '@/types';
 
-interface StatCardProps {
-  label: string;
-  value: number;
-  icon: LucideIcon;
-  /** Accent colour for the icon chip — normally the risk or event-type colour. */
-  accent: string;
-  delta?: StatDelta;
-  /** Sub-label under the value, e.g. "last 30 days". */
-  caption?: string;
-  /**
-   * When true, a rise is bad (more fires) rather than good. Controls whether an
-   * increase is tinted red or green.
-   */
-  higherIsWorse?: boolean;
-}
-
+/**
+ * A single flat statistic.
+ *
+ * No icon badge — the meaning is carried by a 2px coloured left border and by
+ * the label, which is the whole point of the design brief. The number counts
+ * up on mount via GSAP, writing textContent directly rather than through React
+ * state so a 60fps tween does not re-render the card tree.
+ */
 export function StatCard({
   label,
   value,
-  icon: Icon,
-  accent,
+  unit,
+  accent = 'neutral',
+  decimals = 0,
   delta,
-  caption,
-  higherIsWorse = true,
-}: StatCardProps) {
-  const change = delta?.changePercent ?? null;
-  const rising = change !== null && change > 0;
-  const falling = change !== null && change < 0;
-  const bad = higherIsWorse ? rising : falling;
-  const good = higherIsWorse ? falling : rising;
+  footnote,
+  className,
+}: {
+  label: string;
+  value: number;
+  unit?: string;
+  /** Left-border accent. Rust = industrial/elevated, sage = nominal. */
+  accent?: 'rust' | 'sage' | 'neutral' | 'warn';
+  decimals?: number;
+  /** Percentage change against the previous window; null when unknowable. */
+  delta?: number | null;
+  footnote?: ReactNode;
+  className?: string;
+}) {
+  const numberRef = useCountUp(value, { decimals });
 
-  const TrendIcon = rising ? ArrowUpRight : falling ? ArrowDownRight : ArrowRight;
+  const accentColor = {
+    rust: 'border-l-rust',
+    sage: 'border-l-sage',
+    warn: 'border-l-risk-high',
+    neutral: 'border-l-line-strong',
+  }[accent];
 
   return (
-    <article className="group relative overflow-hidden rounded-xl border border-line bg-surface p-5">
-      {/* Thin accent rule tying the tile to its metric colour. */}
-      <span
-        className="absolute inset-x-0 top-0 h-px opacity-70"
-        style={{ background: `linear-gradient(90deg, transparent, ${accent}, transparent)` }}
-        aria-hidden
-      />
+    <div
+      className={cn(
+        'tims-enter tims-accent-l border border-line bg-surface px-3 py-2.5',
+        accentColor,
+        className,
+      )}
+    >
+      <p className="tims-label">{label}</p>
 
-      <div className="flex items-start justify-between gap-3">
-        <p className="text-xs font-medium uppercase tracking-wide text-fg-muted">{label}</p>
+      <p className="mt-1.5 flex items-baseline gap-1">
+        {/* suppressHydrationWarning: GSAP writes textContent on the client, so
+            the server-rendered "0" intentionally differs from first paint. */}
         <span
-          className="grid size-8 shrink-0 place-items-center rounded-lg"
-          style={{ backgroundColor: `${accent}1f`, color: accent }}
-          aria-hidden
+          ref={numberRef}
+          suppressHydrationWarning
+          className="tims-data text-[26px] font-medium leading-none text-fg"
         >
-          <Icon className="size-4" />
+          0
         </span>
-      </div>
+        {unit ? <span className="tims-data text-[11px] text-fg-subtle">{unit}</span> : null}
+      </p>
 
-      <p className="tims-data mt-3 text-3xl font-semibold leading-none text-fg">{formatNumber(value)}</p>
-
-      <div className="mt-3 flex items-center gap-2 text-xs">
-        {change !== null ? (
+      <div className="mt-1.5 flex min-h-[14px] items-center gap-2">
+        {delta !== undefined && delta !== null ? (
           <span
             className={cn(
-              'inline-flex items-center gap-0.5 font-medium',
-              bad ? 'text-red-500' : good ? 'text-emerald-500' : 'text-fg-subtle',
+              'tims-data text-[10px]',
+              delta > 0 ? 'text-rust' : delta < 0 ? 'text-sage' : 'text-fg-subtle',
             )}
+            title="Change against the preceding window of equal length"
           >
-            <TrendIcon className="size-3.5" aria-hidden />
-            {formatSignedPercent(change)}
+            {delta > 0 ? '▲' : delta < 0 ? '▼' : '—'} {Math.abs(delta).toFixed(1)}%
           </span>
-        ) : (
-          <span className="text-fg-subtle">No prior data</span>
-        )}
-        {caption ? <span className="text-fg-subtle">{caption}</span> : null}
+        ) : null}
+        {footnote ? <span className="text-[10px] leading-tight text-fg-subtle">{footnote}</span> : null}
       </div>
-    </article>
+    </div>
+  );
+}
+
+/** Row of stat cards divided by hairlines rather than gaps. */
+export function StatRow({ children, className }: { children: ReactNode; className?: string }) {
+  return (
+    <div className={cn('grid gap-px bg-line sm:grid-cols-2 lg:grid-cols-4', className)}>
+      {children}
+    </div>
   );
 }

@@ -1,337 +1,387 @@
+import { BHOPAL_BBOX, FIRMS_LIMITS, PILOT, THRESHOLDS } from '../../../config/bhopal';
 import { env } from '../../../config/env';
 import { getPostgisStatus } from '../../../config/postgis';
 import { prisma } from '../../../config/prisma';
-import type { EventType, RiskLevel } from '../../../generated/prisma/enums';
 import { createLogger } from '../../../utils/logger';
-import { regionForPoint } from '../../../utils/regions';
-import { assessHotspot, PERSISTENT_SOURCE_DAYS, toAlertSeverity, toRiskLevel } from '../../../utils/risk';
-import { raiseAlertForHotspot } from '../../alert.service';
-import { findNearestFacility } from '../../geo.service';
+import { filterWithinBoundary } from '../../geo.service';
 import { getFirmsProvider } from './firms.provider';
-import type { FirmsDetection } from './firms.types';
+import type { FirmsDetection, FirmsFetchParams, FirmsWindow } from './firms.types';
 
 const log = createLogger('firms:ingest');
 
-/**
- * Grid resolution used for persistence binning: 0.01 degrees is roughly 1.1 km,
- * which is about one VIIRS pixel. Two detections in the same cell on different
- * days are treated as the same physical source.
- *
- * This is spatial *binning*, not a distance calculation — it deliberately needs
- * no PostGIS so persistence still works on a plain PostgreSQL instance.
- */
-const GRID_DEGREES = 0.01;
-/** How far back to look when counting how long a source has been burning. */
-const PERSISTENCE_LOOKBACK_DAYS = 30;
+/** Bhopal pilot bbox as the [minLng, minLat, maxLng, maxLat] tuple FIRMS wants. */
+const PILOT_BBOX: [number, number, number, number] = [
+  BHOPAL_BBOX.minLng,
+  BHOPAL_BBOX.minLat,
+  BHOPAL_BBOX.maxLng,
+  BHOPAL_BBOX.maxLat,
+];
 
-export interface FirmsIngestResult {
-  provider: string;
-  live: boolean;
-  fetched: number;
-  created: number;
-  duplicates: number;
-  failed: number;
-  alertsRaised: number;
-  durationMs: number;
-  error?: string;
+export interface FirmsFetchOutcome {
+  detections: FirmsDetection[];
+  window: FirmsWindow;
+  /** Per-product counts, so a single failing product is visible in the logs. */
+  perProduct: Record<string, number>;
+  errors: string[];
 }
 
-function gridCell(value: number): { min: number; max: number } {
-  const cell = Math.floor(value / GRID_DEGREES);
-  return { min: cell * GRID_DEGREES, max: (cell + 1) * GRID_DEGREES };
-}
-
-/**
- * Counts distinct prior days on which this grid cell was already burning.
- * Returns at least 1 (today's own detection).
- */
-async function computePersistenceDays(detection: FirmsDetection): Promise<number> {
-  const latCell = gridCell(detection.latitude);
-  const lonCell = gridCell(detection.longitude);
-  const since = new Date(detection.detectedAt.getTime() - PERSISTENCE_LOOKBACK_DAYS * 86_400_000);
-
-  const rows = await prisma.$queryRaw<Array<{ days: bigint }>>`
-    SELECT COUNT(DISTINCT date_trunc('day', h."detectedAt")) AS days
-    FROM "hotspots" h
-    WHERE h."latitude" >= ${latCell.min} AND h."latitude" < ${latCell.max}
-      AND h."longitude" >= ${lonCell.min} AND h."longitude" < ${lonCell.max}
-      AND h."detectedAt" >= ${since}
-      AND h."detectedAt" <= ${detection.detectedAt}
-  `;
-
-  return Math.max(1, Number(rows[0]?.days ?? 0) + 1);
-}
-
-interface FacilityLink {
-  industrialFacilityId: string | null;
-  distanceToFacilityM: number | null;
-}
-
-async function linkFacility(detection: FirmsDetection): Promise<FacilityLink> {
-  if (!getPostgisStatus().available) {
-    return { industrialFacilityId: null, distanceToFacilityM: null };
-  }
-  try {
-    const nearest = await findNearestFacility(detection.latitude, detection.longitude, 50);
-    return nearest
-      ? { industrialFacilityId: nearest.id, distanceToFacilityM: nearest.distanceMeters }
-      : { industrialFacilityId: null, distanceToFacilityM: null };
-  } catch (error) {
-    log.warn('Facility linking failed for detection', {
-      externalId: detection.externalId,
-      error: error instanceof Error ? error.message : error,
-    });
-    return { industrialFacilityId: null, distanceToFacilityM: null };
-  }
-}
-
-const ALERTABLE_TYPES: EventType[] = ['INDUSTRIAL_FIRE', 'GAS_FLARE'];
-
-function shouldAlert(eventType: EventType, riskLevel: RiskLevel, persistenceDays: number): boolean {
-  if (riskLevel === 'CRITICAL') return true;
-  if (riskLevel === 'HIGH' && ALERTABLE_TYPES.includes(eventType)) return true;
-  // A source burning for a week is worth flagging even at moderate intensity.
-  return persistenceDays >= 7 && ALERTABLE_TYPES.includes(eventType);
-}
-
-function describeAlert(params: {
-  eventType: EventType;
-  riskScore: number;
-  persistenceDays: number;
-  facilityName: string | null;
-  distanceToFacilityM: number | null;
-  region: string | null;
-}): { title: string; message: string } {
-  const label = params.eventType.replace(/_/g, ' ').toLowerCase();
-  const article = /^[aeiou]/.test(label) ? 'An' : 'A';
-  const where = params.facilityName
-    ? `${params.facilityName}${params.distanceToFacilityM != null ? ` (${Math.round(params.distanceToFacilityM)} m away)` : ''}`
-    : (params.region ?? 'an unclassified area');
-
-  return {
-    title: `${params.eventType === 'GAS_FLARE' ? 'Persistent flare' : 'Thermal anomaly'} near ${params.facilityName ?? where}`,
-    message:
-      `${article} ${label} was detected near ${where}. ` +
-      `Risk score ${params.riskScore}/100, active for ${params.persistenceDays} day(s). ` +
-      `Verify against ground reports before escalation.`,
-  };
-}
-
-function parseBbox(value: string): [number, number, number, number] {
+function parseBboxOverride(value: string): [number, number, number, number] | null {
+  if (!value.trim()) return null;
   const parts = value.split(',').map(Number);
-  if (parts.length !== 4 || parts.some(Number.isNaN)) return [68.0, 6.0, 98.0, 38.0];
+  if (parts.length !== 4 || parts.some((part) => !Number.isFinite(part))) {
+    log.warn(`FIRMS_AREA="${value}" is not a valid bbox; falling back to the Bhopal pilot bbox`);
+    return null;
+  }
   return parts as [number, number, number, number];
 }
 
+/** Resolves the area of interest: an explicit override, else the pilot bbox. */
+export function resolveBbox(override?: string): [number, number, number, number] {
+  return parseBboxOverride(override ?? env.FIRMS_AREA) ?? PILOT_BBOX;
+}
+
+/** Inclusive list of archive start dates covering [from, to] in dayRange steps. */
+function archiveWindows(from: string, to: string, dayRange: number): string[] {
+  const starts: string[] = [];
+  const end = new Date(`${to}T00:00:00Z`).getTime();
+  let cursor = new Date(`${from}T00:00:00Z`).getTime();
+  const step = dayRange * 86_400_000;
+
+  while (cursor <= end) {
+    starts.push(new Date(cursor).toISOString().slice(0, 10));
+    cursor += step;
+  }
+  return starts;
+}
+
+async function fetchProduct(params: FirmsFetchParams): Promise<FirmsDetection[]> {
+  return getFirmsProvider().fetchDetections(params);
+}
+
 /**
- * Persists a batch of detections: de-duplicate, enrich, classify, score, alert.
+ * Fetches real FIRMS detections for the pilot area.
  *
- * Exported so the seeder can reuse the exact same pipeline the cron job uses —
- * seeded data is therefore indistinguishable from ingested data.
+ * Strategy, in order:
+ *   1. Live NRT across all NRT products for the trailing `dayRange` days.
+ *   2. If that yields fewer than FIRMS_MIN_LIVE_RECORDS rows, ALSO sweep the
+ *      FIRMS archive (SP products) over a documented historical fire season.
+ *
+ * Step 2 exists because the 25 km Bhopal pilot bbox genuinely has no NRT
+ * detections outside the burning season - verified against the live API on
+ * 2026-09-15, which returned 0 rows for every NRT product at every day range.
+ * The window actually used is recorded on the returned `window` object, logged,
+ * and surfaced in the UI. Synthetic data is never substituted.
  */
-export async function ingestDetections(detections: FirmsDetection[]): Promise<{
-  created: number;
-  duplicates: number;
-  failed: number;
-  alertsRaised: number;
-}> {
-  let created = 0;
-  let duplicates = 0;
-  let failed = 0;
-  let alertsRaised = 0;
+export async function fetchBhopalDetections(
+  options: { bbox?: string; dayRange?: number; forceArchive?: boolean } = {},
+): Promise<FirmsFetchOutcome> {
+  const bbox = resolveBbox(options.bbox);
+  const dayRange = Math.min(options.dayRange ?? env.FIRMS_DAY_RANGE, FIRMS_LIMITS.maxDayRange);
+  const perProduct: Record<string, number> = {};
+  const errors: string[] = [];
+  const detections: FirmsDetection[] = [];
 
-  // Oldest first: persistence counting depends on earlier days already existing.
-  const ordered = [...detections].sort((a, b) => a.detectedAt.getTime() - b.detectedAt.getTime());
-
-  for (const detection of ordered) {
-    try {
-      const existing = await prisma.hotspot.findUnique({
-        where: { externalId: detection.externalId },
-        select: { id: true },
-      });
-      if (existing) {
-        duplicates += 1;
-        continue;
+  if (!options.forceArchive) {
+    for (const product of FIRMS_LIMITS.nrtProducts) {
+      try {
+        const rows = await fetchProduct({ bbox, dayRange, product });
+        perProduct[product] = rows.length;
+        detections.push(...rows);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        perProduct[product] = 0;
+        errors.push(`${product}: ${message}`);
+        log.warn(`NRT fetch failed for ${product}`, { error: message });
       }
+    }
 
-      const [persistenceDays, facility] = await Promise.all([
-        computePersistenceDays(detection),
-        linkFacility(detection),
-      ]);
-
-      const { eventType, riskScore } = assessHotspot({
-        brightnessTemperature: detection.brightnessTemperature,
-        frp: detection.frp,
-        confidence: detection.confidence,
-        persistenceDays,
-        distanceToFacilityM: facility.distanceToFacilityM,
-        dayNight: detection.dayNight,
-      });
-
-      const riskLevel = toRiskLevel(riskScore);
-      const region = regionForPoint(detection.latitude, detection.longitude);
-
-      const hotspot = await prisma.hotspot.create({
-        data: {
-          externalId: detection.externalId,
-          latitude: detection.latitude,
-          longitude: detection.longitude,
-          detectedAt: detection.detectedAt,
-          confidence: detection.confidence,
-          brightnessTemperature: detection.brightnessTemperature,
-          frp: detection.frp,
-          satellite: detection.satellite,
-          dayNight: detection.dayNight,
-          source: detection.source,
-          region,
-          persistenceDays,
-          eventType,
-          riskScore,
-          riskLevel,
-          industrialFacilityId: facility.industrialFacilityId,
-          distanceToFacilityM: facility.distanceToFacilityM,
+    if (detections.length >= env.FIRMS_MIN_LIVE_RECORDS) {
+      return {
+        detections,
+        window: {
+          kind: 'live-nrt',
+          description: `Live NRT, trailing ${dayRange} day(s)`,
+          products: [...FIRMS_LIMITS.nrtProducts],
+          dayRange,
         },
-        include: { industrialFacility: { select: { name: true } } },
-      });
+        perProduct,
+        errors,
+      };
+    }
 
-      created += 1;
+    log.warn(
+      `Live NRT returned ${detections.length} detection(s) for the ${PILOT.label} pilot bbox ` +
+        `(threshold ${env.FIRMS_MIN_LIVE_RECORDS}). ` +
+        (env.FIRMS_ARCHIVE_FALLBACK
+          ? 'Widening to the FIRMS archive fire season.'
+          : 'Archive fallback is disabled; returning the live result as-is.'),
+    );
 
-      if (shouldAlert(eventType, riskLevel, persistenceDays)) {
-        const { title, message } = describeAlert({
-          eventType,
-          riskScore,
-          persistenceDays,
-          facilityName: hotspot.industrialFacility?.name ?? null,
-          distanceToFacilityM: facility.distanceToFacilityM,
-          region,
-        });
-
-        const alert = await raiseAlertForHotspot({
-          hotspotId: hotspot.id,
-          title,
-          message,
-          severity: toAlertSeverity(riskLevel),
-          // Anchored to the detection, not to wall-clock time, so replaying a
-          // backlog produces the same alert timeline as live ingestion would.
-          referenceTime: detection.detectedAt,
-        });
-        if (alert) alertsRaised += 1;
-      }
-    } catch (error) {
-      failed += 1;
-      log.warn('Failed to ingest detection', {
-        externalId: detection.externalId,
-        error: error instanceof Error ? error.message : error,
-      });
+    if (!env.FIRMS_ARCHIVE_FALLBACK) {
+      return {
+        detections,
+        window: {
+          kind: 'live-nrt',
+          description: `Live NRT, trailing ${dayRange} day(s) - no detections in window`,
+          products: [...FIRMS_LIMITS.nrtProducts],
+          dayRange,
+        },
+        perProduct,
+        errors,
+      };
     }
   }
 
-  return { created, duplicates, failed, alertsRaised };
-}
+  // --- Archive sweep --------------------------------------------------------
+  // Sweeps every configured fire season, not just the most recent one.
+  //
+  // A single season yielded 434 detections, of which only 8 fell within 1 km of
+  // a mapped industrial site. That is too few to evaluate an industrial class
+  // on a 20% test split, so the sweep covers multiple seasons to obtain more
+  // *real* detections. Oversampling or synthesising minority-class rows was
+  // rejected: more real data is strictly better than invented data.
+  const seasons = FIRMS_LIMITS.archiveSeasons;
+  const sweptSeasons: string[] = [];
 
-/**
- * Full ingest cycle: fetch from the active provider, then persist.
- *
- * Never throws. A FIRMS outage, an expired MAP_KEY or a network failure is
- * reported in the returned result and logged; the API stays up.
- */
-export async function runFirmsIngest(
-  options: { bbox?: string; dayRange?: number; source?: string } = {},
-): Promise<FirmsIngestResult> {
-  const startedAt = Date.now();
-  const provider = getFirmsProvider();
+  log.info(
+    `FIRMS archive sweep: ${FIRMS_LIMITS.archiveProducts.length} product(s) across ` +
+      `${seasons.length} season(s) in ${dayRange}-day windows`,
+  );
 
-  const result: FirmsIngestResult = {
-    provider: provider.name,
-    live: provider.isLive,
-    fetched: 0,
-    created: 0,
-    duplicates: 0,
-    failed: 0,
-    alertsRaised: 0,
-    durationMs: 0,
-  };
+  for (const season of seasons) {
+    const starts = archiveWindows(season.from, season.to, dayRange);
+    sweptSeasons.push(`${season.label} (${season.from}..${season.to}, ${starts.length} windows)`);
 
-  try {
-    const detections = await provider.fetchDetections({
-      bbox: parseBbox(options.bbox ?? env.FIRMS_AREA),
-      dayRange: options.dayRange ?? env.FIRMS_DAY_RANGE,
-      source: options.source ?? env.FIRMS_SOURCE,
-    });
+    for (const product of FIRMS_LIMITS.archiveProducts) {
+      let productTotal = perProduct[product] ?? 0;
 
-    result.fetched = detections.length;
-    Object.assign(result, await ingestDetections(detections));
-  } catch (error) {
-    result.error = error instanceof Error ? error.message : 'Unknown FIRMS error';
-    log.error('FIRMS ingest failed', { error: result.error });
+      for (const startDate of starts) {
+        try {
+          const rows = await fetchProduct({ bbox, dayRange, product, startDate });
+          productTotal += rows.length;
+          detections.push(...rows);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          // A product with no archive coverage for an older season answers with
+          // an error; that is expected, not fatal, so the sweep continues.
+          errors.push(`${product}@${startDate}: ${message}`);
+        }
+      }
+
+      perProduct[product] = productTotal;
+    }
+
+    log.info(`  swept ${season.label}: running total ${detections.length} detection(s)`);
   }
 
-  result.durationMs = Date.now() - startedAt;
-  log.info('FIRMS ingest complete', result);
-  return result;
+  // Explicit string arrays: reducing over the readonly tuple directly makes
+  // TypeScript infer the element object type rather than string.
+  const froms: string[] = seasons.map((season) => season.from);
+  const tos: string[] = seasons.map((season) => season.to);
+  const from = froms.length > 0 ? froms.reduce((min, value) => (value < min ? value : min)) : '';
+  const to = tos.length > 0 ? tos.reduce((max, value) => (value > max ? value : max)) : '';
+
+  return {
+    detections,
+    window: {
+      kind: 'archive',
+      description:
+        `FIRMS archive, ${seasons.length} season(s) ${from} to ${to}: ` +
+        seasons.map((s) => s.label).join('; '),
+      products: [...FIRMS_LIMITS.archiveProducts],
+      from,
+      to,
+      dayRange,
+      seasons: sweptSeasons,
+    },
+    perProduct,
+    errors,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Geospatial feature computation (Part 4, Step 3)
+// ---------------------------------------------------------------------------
+
+export interface GeospatialFeatures {
+  /** Metres to the nearest industrial facility, or null when none exists. */
+  distanceToFacilityM: number | null;
+  industrialFacilityId: string | null;
+  /**
+   * Distinct days this ~1 km neighbourhood has been detected within the
+   * lookback window, including the detection being scored.
+   */
+  persistenceDays: number;
+  /** Total detections within the persistence radius, regardless of day. */
+  recurrenceCount: number;
 }
 
 /**
- * Recomputes persistence and re-scores every hotspot detected in the lookback
- * window. Run on a schedule: a source only reveals itself as *persistent* once
- * later days have also been ingested.
+ * Computes the geospatial features the classifier consumes, for one point.
+ *
+ * Both the distance and the recurrence count are computed by PostGIS
+ * (ST_DWithin / KNN) rather than in JavaScript, so they are true geodesic
+ * metres on the WGS84 spheroid and can use the GiST indexes.
  */
-export async function recomputePersistence(): Promise<{ examined: number; updated: number }> {
-  const since = new Date(Date.now() - PERSISTENCE_LOOKBACK_DAYS * 86_400_000);
+export async function computeGeospatialFeatures(
+  latitude: number,
+  longitude: number,
+  detectedAt: Date,
+): Promise<GeospatialFeatures> {
+  if (!getPostgisStatus().available) {
+    // Nulls rather than a Haversine approximation: a fabricated distance would
+    // silently corrupt every downstream classification.
+    return {
+      distanceToFacilityM: null,
+      industrialFacilityId: null,
+      persistenceDays: 1,
+      recurrenceCount: 1,
+    };
+  }
 
-  const hotspots = await prisma.hotspot.findMany({
-    where: { detectedAt: { gte: since } },
-    select: {
-      id: true,
-      latitude: true,
-      longitude: true,
-      detectedAt: true,
-      confidence: true,
-      brightnessTemperature: true,
-      frp: true,
-      dayNight: true,
-      persistenceDays: true,
-      riskScore: true,
-      distanceToFacilityM: true,
-    },
+  const since = new Date(detectedAt.getTime() - THRESHOLDS.persistenceLookbackDays * 86_400_000);
+
+  const nearestRows = await prisma.$queryRaw<Array<{ id: string; meters: number }>>`
+    WITH origin AS (
+      SELECT ST_SetSRID(ST_MakePoint(${longitude}::double precision, ${latitude}::double precision), 4326)::geography AS geog
+    )
+    SELECT
+      f."id",
+      ST_Distance(
+        ST_SetSRID(ST_MakePoint(f."longitude", f."latitude"), 4326)::geography,
+        origin.geog
+      ) AS meters
+    FROM "industrial_facilities" f, origin
+    ORDER BY ST_SetSRID(ST_MakePoint(f."longitude", f."latitude"), 4326)::geography <-> origin.geog
+    LIMIT 1
+  `;
+  const nearest = nearestRows[0];
+
+  // Recurrence uses a true metric radius, unlike the degree-grid binning this
+  // replaced - a 0.01 degree cell is not a constant distance across latitudes.
+  const recurrenceRows = await prisma.$queryRaw<Array<{ days: bigint; detections: bigint }>>`
+    WITH origin AS (
+      SELECT ST_SetSRID(ST_MakePoint(${longitude}::double precision, ${latitude}::double precision), 4326)::geography AS geog
+    )
+    SELECT
+      COUNT(DISTINCT date_trunc('day', h."detectedAt")) AS days,
+      COUNT(*) AS detections
+    FROM "hotspots" h, origin
+    WHERE h."detectedAt" >= ${since}
+      AND h."detectedAt" <= ${detectedAt}
+      AND ST_DWithin(
+        ST_SetSRID(ST_MakePoint(h."longitude", h."latitude"), 4326)::geography,
+        origin.geog,
+        ${THRESHOLDS.persistenceRadiusM}::double precision
+      )
+  `;
+  const recurrence = recurrenceRows[0];
+
+  return {
+    distanceToFacilityM: nearest?.meters ?? null,
+    industrialFacilityId: nearest?.id ?? null,
+    // +1 counts the detection being scored, which is not yet persisted.
+    persistenceDays: Math.max(1, Number(recurrence?.days ?? 0) + 1),
+    recurrenceCount: Math.max(1, Number(recurrence?.detections ?? 0) + 1),
+  };
+}
+
+/**
+ * Recomputes persistence for every hotspot in the lookback window.
+ *
+ * Run on a schedule: a source only reveals itself as persistent once later days
+ * have also been ingested, so the value written at ingest time is a floor.
+ *
+ * One set-based pass over the geography index, rather than a round trip per
+ * hotspot as the previous implementation did.
+ */
+export async function recomputePersistence(
+  options: { allTime?: boolean } = {},
+): Promise<{ examined: number; updated: number }> {
+  if (!getPostgisStatus().available) {
+    log.warn('Skipping persistence recompute - PostGIS unavailable');
+    return { examined: 0, updated: 0 };
+  }
+
+  const lookbackDays = THRESHOLDS.persistenceLookbackDays;
+
+  // Which hotspots to recompute.
+  //
+  // Anchored to the newest detection rather than wall-clock time: after an
+  // archive read the data is months old, so a `now - 30 days` window selected
+  // zero rows and the recompute silently did nothing.
+  //
+  // `allTime` widens it to every stored hotspot, which is required after a
+  // multi-season sweep - each row's own 30-day neighbourhood is still what gets
+  // counted (see the join below), but every row needs revisiting because rows
+  // inserted later change the counts of rows inserted earlier.
+  const newest = await prisma.hotspot.aggregate({ _max: { detectedAt: true } });
+  const anchor = newest._max.detectedAt ?? new Date();
+  const since = options.allTime
+    ? new Date(0)
+    : new Date(anchor.getTime() - lookbackDays * 86_400_000);
+
+  log.info('Persistence recompute window', {
+    scope: options.allTime ? 'all-time' : `trailing ${lookbackDays} day(s)`,
+    anchoredTo: anchor.toISOString(),
+    since: since.toISOString(),
   });
 
-  let updated = 0;
-
-  for (const hotspot of hotspots) {
-    const latCell = gridCell(hotspot.latitude);
-    const lonCell = gridCell(hotspot.longitude);
-
-    const rows = await prisma.$queryRaw<Array<{ days: bigint }>>`
-      SELECT COUNT(DISTINCT date_trunc('day', h."detectedAt")) AS days
+  const updated = await prisma.$executeRaw`
+    WITH recomputed AS (
+      SELECT
+        h."id" AS hid,
+        GREATEST(1, COUNT(DISTINCT date_trunc('day', n."detectedAt"))::int) AS days
       FROM "hotspots" h
-      WHERE h."latitude" >= ${latCell.min} AND h."latitude" < ${latCell.max}
-        AND h."longitude" >= ${lonCell.min} AND h."longitude" < ${lonCell.max}
-        AND h."detectedAt" >= ${since}
-    `;
+      LEFT JOIN "hotspots" n
+        ON n."detectedAt" <= h."detectedAt"
+       AND n."detectedAt" >= h."detectedAt" - make_interval(days => ${lookbackDays}::int)
+       AND ST_DWithin(
+             ST_SetSRID(ST_MakePoint(n."longitude", n."latitude"), 4326)::geography,
+             ST_SetSRID(ST_MakePoint(h."longitude", h."latitude"), 4326)::geography,
+             ${THRESHOLDS.persistenceRadiusM}::double precision
+           )
+      WHERE h."detectedAt" >= ${since}
+      GROUP BY h."id"
+    )
+    UPDATE "hotspots" h
+    SET "persistenceDays" = r.days, "updatedAt" = NOW()
+    FROM recomputed r
+    WHERE h."id" = r.hid AND h."persistenceDays" <> r.days
+  `;
 
-    const persistenceDays = Math.max(1, Number(rows[0]?.days ?? 1));
-    if (persistenceDays === hotspot.persistenceDays) continue;
-
-    const { eventType, riskScore } = assessHotspot({
-      brightnessTemperature: hotspot.brightnessTemperature,
-      frp: hotspot.frp,
-      confidence: hotspot.confidence,
-      persistenceDays,
-      distanceToFacilityM: hotspot.distanceToFacilityM,
-      dayNight: hotspot.dayNight,
-    });
-
-    await prisma.hotspot.update({
-      where: { id: hotspot.id },
-      data: { persistenceDays, eventType, riskScore, riskLevel: toRiskLevel(riskScore) },
-    });
-    updated += 1;
-  }
-
-  log.info(`Persistence recompute finished: ${updated}/${hotspots.length} hotspots updated`);
-  return { examined: hotspots.length, updated };
+  const examined = await prisma.hotspot.count({ where: { detectedAt: { gte: since } } });
+  log.info(`Persistence recompute finished: ${updated}/${examined} hotspot(s) updated`);
+  return { examined, updated };
 }
 
-/** Threshold re-exported so controllers and the seeder agree on "persistent". */
-export { PERSISTENT_SOURCE_DAYS };
+/**
+ * Backfills the Bhopal geofence flag with a single set-based ST_Within pass.
+ *
+ * Kept separate from ingest so the flag can be recomputed after the boundary
+ * polygon is reloaded, without re-fetching anything from NASA.
+ */
+export async function recomputeBoundaryFlags(boundaryName: string = PILOT.label): Promise<number> {
+  if (!getPostgisStatus().available) return 0;
+
+  const updated = await prisma.$executeRaw`
+    UPDATE "hotspots" h
+    SET "inBhopalBoundary" = ST_Within(
+          ST_SetSRID(ST_MakePoint(h."longitude", h."latitude"), 4326),
+          b."geom"
+        ),
+        "updatedAt" = NOW()
+    FROM "administrative_boundaries" b
+    WHERE b."name" = ${boundaryName}
+      AND b."geom" IS NOT NULL
+      AND h."inBhopalBoundary" IS DISTINCT FROM ST_Within(
+            ST_SetSRID(ST_MakePoint(h."longitude", h."latitude"), 4326),
+            b."geom"
+          )
+  `;
+
+  log.info(`Boundary flag recompute: ${updated} hotspot(s) updated`);
+  return updated;
+}
+
+export { filterWithinBoundary };

@@ -1,4 +1,5 @@
 import { env } from '../../../config/env';
+import { FIRMS_LIMITS } from '../../../config/bhopal';
 import type { HotspotSource } from '../../../generated/prisma/enums';
 import { createLogger } from '../../../utils/logger';
 import type { FirmsDetection, FirmsFetchParams, FirmsProvider } from './firms.types';
@@ -6,12 +7,15 @@ import type { FirmsDetection, FirmsFetchParams, FirmsProvider } from './firms.ty
 const log = createLogger('firms:api');
 
 /**
- * Maps a FIRMS product name onto our HotspotSource enum. Unknown products are
- * accepted and recorded as MODIS_NRT rather than rejected outright.
+ * Maps a FIRMS product name onto our HotspotSource enum.
+ *
+ * Both NRT and SP (archive) variants of a product map to the same source: the
+ * satellite and instrument are identical, only the processing latency differs.
  */
 function toHotspotSource(product: string): HotspotSource {
   const normalised = product.toUpperCase();
   if (normalised.includes('NOAA20') || normalised.includes('NOAA-20')) return 'VIIRS_NOAA20_NRT';
+  if (normalised.includes('NOAA21') || normalised.includes('NOAA-21')) return 'VIIRS_NOAA20_NRT';
   if (normalised.includes('VIIRS')) return 'VIIRS_SNPP_NRT';
   if (normalised.includes('LANDSAT')) return 'LANDSAT_NRT';
   return 'MODIS_NRT';
@@ -40,7 +44,7 @@ function parseAcquisition(acqDate: string, acqTime: string): Date {
   return new Date(`${acqDate}T${hours}:${minutes}:00Z`);
 }
 
-/** Minimal RFC-4180-ish CSV reader — FIRMS output is unquoted and flat. */
+/** Minimal CSV reader — FIRMS output is unquoted and flat. */
 function parseCsv(text: string): Array<Record<string, string>> {
   const lines = text.trim().split(/\r?\n/);
   const headerLine = lines.shift();
@@ -63,45 +67,71 @@ function parseCsv(text: string): Array<Record<string, string>> {
 /**
  * Live NASA FIRMS provider.
  *
- * Endpoint shape:
+ * Endpoint shapes:
  *   {base}/area/csv/{MAP_KEY}/{PRODUCT}/{west,south,east,north}/{dayRange}
+ *   {base}/area/csv/{MAP_KEY}/{PRODUCT}/{west,south,east,north}/{dayRange}/{startDate}
  *
- * This class is fully implemented but only instantiated when FIRMS_MAP_KEY is
- * set — see firms.provider.ts. It has no other dependency on application state,
- * so it can be unit-tested against a recorded CSV fixture.
+ * The second form reads the archive and is what the fire-season fallback uses.
  */
 export class NasaFirmsProvider implements FirmsProvider {
   readonly name = 'firms-nasa';
   readonly isLive = true;
 
   async fetchDetections(params: FirmsFetchParams): Promise<FirmsDetection[]> {
-    const [minLon, minLat, maxLon, maxLat] = params.bbox;
-    const area = `${minLon},${minLat},${maxLon},${maxLat}`;
-    const url = `${env.FIRMS_BASE_URL}/area/csv/${env.FIRMS_MAP_KEY}/${params.source}/${area}/${params.dayRange}`;
+    const [minLng, minLat, maxLng, maxLat] = params.bbox;
+    const area = `${minLng},${minLat},${maxLng},${maxLat}`;
 
-    log.info('Fetching FIRMS detections', { source: params.source, area, dayRange: params.dayRange });
-
-    const response = await fetch(url, { signal: AbortSignal.timeout(60_000) });
-
-    if (!response.ok) {
-      throw new Error(`FIRMS responded ${response.status} ${response.statusText}`);
+    // Clamping here rather than trusting the caller: FIRMS answers HTTP 400 for
+    // anything above 5, which would otherwise fail the whole ingest cycle.
+    const dayRange = Math.min(Math.max(1, Math.trunc(params.dayRange)), FIRMS_LIMITS.maxDayRange);
+    if (dayRange !== params.dayRange) {
+      log.warn(`dayRange ${params.dayRange} clamped to ${dayRange} (FIRMS allows 1..${FIRMS_LIMITS.maxDayRange})`);
     }
+
+    const path = `/area/csv/${env.FIRMS_MAP_KEY}/${params.product}/${area}/${dayRange}`;
+    const url = `${env.FIRMS_BASE_URL}${path}${params.startDate ? `/${params.startDate}` : ''}`;
+
+    log.info('Fetching FIRMS detections', {
+      product: params.product,
+      area,
+      dayRange,
+      startDate: params.startDate ?? '(trailing window)',
+    });
+
+    const response = await fetch(url, {
+      signal: AbortSignal.timeout(90_000),
+      headers: { Accept: 'text/csv' },
+    });
 
     const body = await response.text();
 
-    // FIRMS returns a plain-text error page (HTTP 200) for an invalid key.
-    if (body.startsWith('Invalid') || body.includes('Invalid MAP_KEY')) {
-      throw new Error('FIRMS rejected the MAP_KEY. Check FIRMS_MAP_KEY in your environment.');
+    if (!response.ok) {
+      // FIRMS puts an actionable message in the body, e.g. "Invalid day range".
+      throw new Error(
+        `FIRMS responded ${response.status} ${response.statusText} for ${params.product}: ${body.slice(0, 200).trim()}`,
+      );
     }
 
-    const source = toHotspotSource(params.source);
+    // FIRMS returns a plain-text error page with HTTP 200 for a bad key.
+    if (/^invalid/i.test(body.trim()) || body.includes('Invalid MAP_KEY')) {
+      throw new Error(`FIRMS rejected the request: ${body.slice(0, 200).trim()}`);
+    }
 
-    return parseCsv(body)
-      .map((row) => this.toDetection(row, source))
+    const source = toHotspotSource(params.product);
+
+    const detections = parseCsv(body)
+      .map((row) => this.toDetection(row, source, params.product))
       .filter((detection): detection is FirmsDetection => detection !== null);
+
+    log.info(`FIRMS returned ${detections.length} usable detection(s) for ${params.product}`);
+    return detections;
   }
 
-  private toDetection(row: Record<string, string>, source: HotspotSource): FirmsDetection | null {
+  private toDetection(
+    row: Record<string, string>,
+    source: HotspotSource,
+    product: string,
+  ): FirmsDetection | null {
     const latitude = Number(row['latitude']);
     const longitude = Number(row['longitude']);
     if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
@@ -113,16 +143,19 @@ export class NasaFirmsProvider implements FirmsProvider {
     const detectedAt = parseAcquisition(acqDate, acqTime);
     if (Number.isNaN(detectedAt.getTime())) return null;
 
-    // VIIRS uses bright_ti4, MODIS uses brightness.
+    // VIIRS reports bright_ti4; MODIS reports brightness. Fall back to the
+    // 11 µm channel only if the primary one is absent.
     const brightness = Number(row['bright_ti4'] ?? row['brightness'] ?? row['bright_t31']);
     if (!Number.isFinite(brightness)) return null;
 
     const frpRaw = Number(row['frp']);
-    const satellite = row['satellite'] ?? 'unknown';
-    const dayNight = (row['daynight'] ?? 'D').toUpperCase() === 'N' ? 'N' : 'D';
+    const satellite = row['satellite'] || 'unknown';
+    const dayNight = (row['daynight'] || 'D').toUpperCase() === 'N' ? 'N' : 'D';
 
     return {
-      externalId: `${satellite}:${detectedAt.toISOString()}:${latitude.toFixed(4)}:${longitude.toFixed(4)}`,
+      // Rounded to 4 dp (~11 m) so the same pixel re-delivered by FIRMS
+      // de-duplicates, while genuinely distinct pixels stay distinct.
+      externalId: `${product}:${satellite}:${detectedAt.toISOString()}:${latitude.toFixed(4)}:${longitude.toFixed(4)}`,
       latitude,
       longitude,
       detectedAt,
@@ -130,8 +163,10 @@ export class NasaFirmsProvider implements FirmsProvider {
       brightnessTemperature: brightness,
       frp: Number.isFinite(frpRaw) ? frpRaw : null,
       satellite,
+      instrument: row['instrument'] || null,
       dayNight,
       source,
+      product,
     };
   }
 }

@@ -1,24 +1,27 @@
-import { env } from '../../../config/env';
-import { MockOsmProvider } from './osm.mock';
+import { createLogger } from '../../../utils/logger';
 import { OverpassOsmProvider } from './osm.overpass';
 import type { OsmProvider } from './osm.types';
+
+const log = createLogger('osm');
 
 let instance: OsmProvider | null = null;
 
 /**
- * Returns the active OSM provider.
+ * Returns the live Overpass provider.
  *
- * Live Overpass is used only when OSM_ENABLED=true; otherwise the curated mock
- * dataset is served. Nothing downstream branches on which one is active.
+ * As with FIRMS there is no mock: facility locations must come from real
+ * OpenStreetMap geometry, because a fabricated factory coordinate would
+ * corrupt every distance-to-facility feature the classifier depends on.
  */
 export function getOsmProvider(): OsmProvider {
   if (!instance) {
-    instance = env.OSM_ENABLED ? new OverpassOsmProvider() : new MockOsmProvider();
+    instance = new OverpassOsmProvider();
+    log.info(`Using OSM provider: ${instance.name} (live)`);
   }
   return instance;
 }
 
-/** Test seam: lets a test or script swap the provider. */
+/** Test seam. */
 export function setOsmProvider(provider: OsmProvider | null): void {
   instance = provider;
 }

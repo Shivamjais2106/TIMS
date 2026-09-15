@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { hotspotService } from '@/services/hotspot.service';
+import { hotspotService } from '@/services';
 import type { HotspotFilters } from '@/types';
 import { useApi } from './useApi';
 import { useDebounce } from './useDebounce';

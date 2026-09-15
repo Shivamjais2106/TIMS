@@ -3,7 +3,7 @@ import { AnalyticsClient } from './AnalyticsClient';
 
 export const metadata: Metadata = {
   title: 'Analytics',
-  description: 'Trends, classification breakdowns and regional distribution of thermal events.',
+  description: 'Detection trends, risk distribution and regional breakdown.',
 };
 
 export default function AnalyticsPage() {

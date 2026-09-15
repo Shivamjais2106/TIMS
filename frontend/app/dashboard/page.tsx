@@ -3,7 +3,7 @@ import { OverviewClient } from './OverviewClient';
 
 export const metadata: Metadata = {
   title: 'Overview',
-  description: 'Thermal activity overview across all monitored industrial regions.',
+  description: 'Bhopal thermal monitoring overview — detections, risk and live alerts.',
 };
 
 export default function DashboardPage() {

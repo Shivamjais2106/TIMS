@@ -1,0 +1,14 @@
+# TIMS classification service — pinned for reproducible Docker builds.
+#
+# Versions match the environment the model in ml/models/ was trained in.
+# scikit-learn in particular MUST match: joblib artefacts are not guaranteed
+# to load across minor versions, and a silent unpickle failure would take the
+# service down at startup.
+fastapi==0.136.1
+uvicorn[standard]==0.46.0
+pydantic==2.12.3
+scikit-learn==1.8.0
+xgboost==3.4.0
+pandas==3.0.2
+numpy==2.4.4
+joblib==1.5.3

@@ -1,5 +1,2 @@
-export { CategoryChart } from './CategoryChart';
-export { FacilityChart } from './FacilityChart';
-export { RegionChart } from './RegionChart';
-export { RiskDistributionChart } from './RiskDistributionChart';
-export { TrendChart } from './TrendChart';
+export { BarList, StackedBar, type BarItem } from './BarList';
+export { TrendChart, Sparkline } from './TrendChart';

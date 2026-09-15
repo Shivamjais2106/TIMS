@@ -1,17 +1,11 @@
 import type { Metadata } from 'next';
-import { Suspense } from 'react';
-import { LoadingState } from '@/components/ui/LoadingState';
 import { MapClient } from './MapClient';
 
 export const metadata: Metadata = {
-  title: 'Thermal Map',
-  description: 'Interactive geospatial view of thermal detections and industrial facilities.',
+  title: 'Live thermal map',
+  description: 'Bhopal-centred thermal anomaly map with layer filters and impact zones.',
 };
 
 export default function MapPage() {
-  return (
-    <Suspense fallback={<LoadingState label="Loading map workspace" minHeight={480} />}>
-      <MapClient />
-    </Suspense>
-  );
+  return <MapClient />;
 }

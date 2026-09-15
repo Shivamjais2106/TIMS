@@ -1,0 +1,13 @@
+# TIMS ML pipeline (training + analysis).
+#
+# The serving container pins its own, narrower set in ml-service/requirements.txt.
+# scikit-learn MUST match between the two: joblib artefacts are not guaranteed
+# to load across minor versions, and a mismatch surfaces as a silent unpickle
+# failure at service startup rather than an obvious error.
+pandas>=2.2
+numpy>=1.26
+scikit-learn==1.8.0
+xgboost==3.4.0
+joblib>=1.4
+matplotlib>=3.8
+psycopg[binary]>=3.2

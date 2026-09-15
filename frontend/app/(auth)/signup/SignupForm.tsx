@@ -1,160 +1,155 @@
 'use client';
 
-import { AtSign, Check, KeyRound, User, X } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useMemo, useState, type FormEvent } from 'react';
+import { useState } from 'react';
 import { Button } from '@/components/ui/Button';
 import { Input, Select } from '@/components/ui/Input';
+import { Panel, PanelBody, PanelHeader } from '@/components/ui/Panel';
+import { ErrorState, NoticeBanner } from '@/components/ui/States';
 import { useAuth } from '@/hooks/useAuth';
+import { useFadeIn } from '@/hooks/useGsap';
 import { describeError } from '@/lib/api';
-import { cn } from '@/lib/utils';
 
-/** Mirrors the backend's zod password policy so users see failures before submit. */
-const RULES = [
-  { label: 'At least 8 characters', test: (value: string) => value.length >= 8 },
-  { label: 'One lowercase letter', test: (value: string) => /[a-z]/.test(value) },
-  { label: 'One uppercase letter', test: (value: string) => /[A-Z]/.test(value) },
-  { label: 'One number', test: (value: string) => /\d/.test(value) },
-];
-
+/**
+ * Account request form.
+ *
+ * Self-service signup is limited to ANALYST and VIEWER. ADMIN cannot be
+ * self-assigned, because ADMIN is what gates the manual data-sync endpoints
+ * that call rate-limited third-party APIs and mutate the database.
+ */
 export function SignupForm() {
   const router = useRouter();
   const { signup } = useAuth();
+  const panelRef = useFadeIn();
 
-  const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [confirm, setConfirm] = useState('');
-  const [role, setRole] = useState<'ANALYST' | 'VIEWER'>('VIEWER');
+  const [form, setForm] = useState({
+    name: '',
+    email: '',
+    password: '',
+    confirm: '',
+    role: 'VIEWER' as 'ANALYST' | 'VIEWER',
+  });
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  const results = useMemo(() => RULES.map((rule) => ({ ...rule, passed: rule.test(password) })), [password]);
-  const passwordValid = results.every((rule) => rule.passed);
-  const mismatch = confirm.length > 0 && confirm !== password;
+  const mismatch = form.confirm.length > 0 && form.confirm !== form.password;
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  function update<K extends keyof typeof form>(key: K, value: (typeof form)[K]) {
+    setForm((current) => ({ ...current, [key]: value }));
+  }
+
+  async function onSubmit(event: React.FormEvent) {
     event.preventDefault();
+    if (mismatch) return;
+
     setError(null);
-
-    if (!passwordValid) {
-      setError('Password does not meet the minimum requirements');
-      return;
-    }
-    if (password !== confirm) {
-      setError('Passwords do not match');
-      return;
-    }
-
     setSubmitting(true);
+
     try {
-      await signup({ name: name.trim(), email: email.trim().toLowerCase(), password, role });
+      await signup({
+        name: form.name.trim(),
+        email: form.email.trim(),
+        password: form.password,
+        role: form.role,
+      });
       router.replace('/dashboard');
     } catch (cause) {
       setError(describeError(cause));
+    } finally {
       setSubmitting(false);
     }
   }
 
   return (
-    <div>
-      <h1 className="text-2xl font-semibold tracking-tight text-fg">Request access</h1>
-      <p className="mt-1.5 text-sm text-fg-muted">
-        Accounts are created with viewer or analyst rights. Administrator access is granted separately.
-      </p>
+    <div ref={panelRef}>
+      <Panel>
+        <PanelHeader label="Account request" title="Create an account" />
 
-      <form onSubmit={handleSubmit} className="mt-8 space-y-4" noValidate>
-        <Input
-          label="Full name"
-          name="name"
-          autoComplete="name"
-          required
-          minLength={2}
-          value={name}
-          onChange={(event) => setName(event.target.value)}
-          placeholder="Priya Nair"
-          icon={<User className="size-4" aria-hidden />}
-        />
+        <PanelBody className="space-y-3">
+          {error ? <ErrorState message={error} /> : null}
 
-        <Input
-          label="Email address"
-          name="email"
-          type="email"
-          autoComplete="email"
-          required
-          value={email}
-          onChange={(event) => setEmail(event.target.value)}
-          placeholder="you@department.gov.in"
-          icon={<AtSign className="size-4" aria-hidden />}
-        />
+          <form onSubmit={onSubmit} className="space-y-3">
+            <Input
+              label="Full name"
+              name="name"
+              autoComplete="name"
+              required
+              minLength={2}
+              value={form.name}
+              onChange={(event) => update('name', event.target.value)}
+              placeholder="Priya Nair"
+            />
 
-        <Select
-          label="Role"
-          name="role"
-          value={role}
-          onChange={(event) => setRole(event.target.value as 'ANALYST' | 'VIEWER')}
-        >
-          <option value="VIEWER">Viewer — read-only access</option>
-          <option value="ANALYST">Analyst — can create and edit records</option>
-        </Select>
+            <Input
+              label="Email"
+              name="email"
+              type="email"
+              autoComplete="email"
+              required
+              value={form.email}
+              onChange={(event) => update('email', event.target.value)}
+              placeholder="analyst@example.gov.in"
+            />
 
-        <Input
-          label="Password"
-          name="password"
-          type="password"
-          autoComplete="new-password"
-          required
-          value={password}
-          onChange={(event) => setPassword(event.target.value)}
-          placeholder="Choose a strong password"
-          icon={<KeyRound className="size-4" aria-hidden />}
-        />
+            <Select
+              label="Role"
+              name="role"
+              value={form.role}
+              onChange={(event) => update('role', event.target.value as 'ANALYST' | 'VIEWER')}
+            >
+              <option value="VIEWER">VIEWER — read-only access</option>
+              <option value="ANALYST">ANALYST — can acknowledge alerts and generate reports</option>
+            </Select>
 
-        {password.length > 0 ? (
-          <ul className="grid grid-cols-2 gap-x-3 gap-y-1">
-            {results.map((rule) => (
-              <li
-                key={rule.label}
-                className={cn('flex items-center gap-1.5 text-[11px]', rule.passed ? 'text-emerald-500' : 'text-fg-subtle')}
-              >
-                {rule.passed ? <Check className="size-3" aria-hidden /> : <X className="size-3" aria-hidden />}
-                {rule.label}
-              </li>
-            ))}
-          </ul>
-        ) : null}
+            <Input
+              label="Password"
+              name="password"
+              type="password"
+              autoComplete="new-password"
+              required
+              minLength={8}
+              value={form.password}
+              onChange={(event) => update('password', event.target.value)}
+              placeholder="••••••••"
+              hint="At least 8 characters. Stored only as a bcrypt hash."
+            />
 
-        <Input
-          label="Confirm password"
-          name="confirmPassword"
-          type="password"
-          autoComplete="new-password"
-          required
-          value={confirm}
-          onChange={(event) => setConfirm(event.target.value)}
-          placeholder="Re-enter your password"
-          icon={<KeyRound className="size-4" aria-hidden />}
-          error={mismatch ? 'Passwords do not match' : undefined}
-        />
+            <Input
+              label="Confirm password"
+              name="confirm"
+              type="password"
+              autoComplete="new-password"
+              required
+              value={form.confirm}
+              onChange={(event) => update('confirm', event.target.value)}
+              placeholder="••••••••"
+              error={mismatch ? 'Passwords do not match' : undefined}
+            />
 
-        {error ? (
-          <p role="alert" className="rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-500 ring-1 ring-inset ring-red-500/25">
-            {error}
+            <Button
+              type="submit"
+              variant="primary"
+              disabled={submitting || mismatch}
+              className="w-full"
+            >
+              {submitting ? 'Creating account…' : 'Create account'}
+            </Button>
+          </form>
+
+          <NoticeBanner label="Note" tone="info">
+            ADMIN rights cannot be self-assigned. Only an administrator can trigger a manual NASA
+            FIRMS or OpenStreetMap synchronisation.
+          </NoticeBanner>
+
+          <p className="text-[11px] text-fg-muted">
+            Already registered?{' '}
+            <Link href="/login" className="text-rust underline-offset-2 hover:underline">
+              Sign in
+            </Link>
           </p>
-        ) : null}
-
-        <Button type="submit" loading={submitting} className="w-full">
-          {submitting ? 'Creating account' : 'Create account'}
-        </Button>
-      </form>
-
-      <p className="mt-6 text-sm text-fg-muted">
-        Already registered?{' '}
-        <Link href="/login" className="font-medium text-primary hover:underline">
-          Sign in
-        </Link>
-      </p>
+        </PanelBody>
+      </Panel>
     </div>
   );
 }

@@ -1,209 +1,248 @@
 'use client';
 
-import { Layers, Search, X } from 'lucide-react';
-import { useSearchParams } from 'next/navigation';
-import { useEffect, useMemo, useState } from 'react';
-import { MapFilters, type MapFilterState } from '@/components/map/MapFilters';
-import { MapLegend } from '@/components/map/MapLegend';
-import { MapView } from '@/components/map/MapView';
-import { Card } from '@/components/ui/Card';
-import { ErrorState } from '@/components/ui/EmptyState';
-import { LoadingState } from '@/components/ui/LoadingState';
+import { useRouter } from 'next/navigation';
+import { useMemo, useState } from 'react';
+import { Header } from '@/components/layout/Header';
+import { MapControls } from '@/components/map/MapLegend';
+import { DEFAULT_LAYERS, MapPanel, type MapLayers } from '@/components/map/MapPanel';
+import { SegmentedControl } from '@/components/ui/Button';
+import { Caveat, ClassBadge, ProvenanceBadge, RiskBadge } from '@/components/ui/Indicators';
+import { Panel, PanelBody, PanelHeader, Readout, ReadoutList } from '@/components/ui/Panel';
+import { ErrorState, LoadingState } from '@/components/ui/States';
 import { useApi } from '@/hooks/useApi';
-import { EVENT_TYPES, RISK_LEVELS } from '@/lib/constants';
-import { formatNumber } from '@/lib/format';
-import { cn } from '@/lib/utils';
-import { geoService } from '@/services/geo.service';
-import { hotspotService } from '@/services/hotspot.service';
-import { industryService } from '@/services/industry.service';
-import type { Hotspot } from '@/types';
+import { useTheme } from '@/hooks/useTheme';
+import { useNavOpener } from '../DashboardShell';
+import { BHOPAL_BBOX, THRESHOLDS } from '@/lib/bhopal';
+import { DISCLAIMERS, riskColor } from '@/lib/constants';
+import {
+  formatCoordinatePair,
+  formatDateTime,
+  formatDistance,
+  formatPower,
+  formatTemperature,
+} from '@/lib/format';
+import { bhopalService, emergencyService, hotspotService, industryService } from '@/services';
+import type { Hotspot, RiskLevel } from '@/types';
 
-const DEFAULT_FILTERS: MapFilterState = {
-  eventTypes: [...EVENT_TYPES],
-  riskLevels: [...RISK_LEVELS],
-  showFacilities: true,
-  showHotspots: true,
-  radiusKm: 10,
-};
+/** Time windows offered by the historical selector (brief section 16). */
+const WINDOWS = [
+  { value: '1', label: '24 h' },
+  { value: '7', label: '7 d' },
+  { value: '30', label: '30 d' },
+  { value: 'all', label: 'All' },
+] as const;
 
+type WindowValue = (typeof WINDOWS)[number]['value'];
+
+const RISK_FILTERS = [
+  { value: 'all', label: 'All' },
+  { value: 'CRITICAL', label: 'Crit' },
+  { value: 'HIGH', label: 'High' },
+  { value: 'MEDIUM', label: 'Med' },
+  { value: 'LOW', label: 'Low' },
+] as const;
+
+/**
+ * Full-screen thermal map with layer filters and a historical time selector.
+ *
+ * The selected detection opens an inspector rail rather than a modal, so the
+ * map stays visible while an analyst reads the readout — the usual pattern for
+ * a geospatial console.
+ */
 export function MapClient() {
-  const searchParams = useSearchParams();
-  const focusId = searchParams.get('focus');
+  const router = useRouter();
+  const openNav = useNavOpener();
+  const { theme } = useTheme();
 
-  const [filters, setFilters] = useState<MapFilterState>(DEFAULT_FILTERS);
-  const [panelOpen, setPanelOpen] = useState(false);
+  const [layers, setLayers] = useState<MapLayers>(DEFAULT_LAYERS);
+  const [windowDays, setWindowDays] = useState<WindowValue>('all');
+  const [riskFilter, setRiskFilter] = useState<string>('all');
   const [selected, setSelected] = useState<Hotspot | null>(null);
-  const [selectedId, setSelectedId] = useState<string | null>(focusId);
 
-  // A map query is bounded by what can usefully be drawn, not by the page size
-  // used elsewhere — hence 2000 rather than 25. Ordered by recency so the layer
-  // reflects the whole area of interest rather than only the hottest clusters.
-  const hotspots = useApi(
-    () => hotspotService.list({ pageSize: 2000, sortBy: 'detectedAt', sortOrder: 'desc' }),
-    [],
-  );
-  const facilities = useApi(() => industryService.list({ pageSize: 500 }), []);
-  const postgis = useApi(() => geoService.status(), []);
+  const query = useMemo(() => {
+    const filters: Record<string, unknown> = { pageSize: 500, sortBy: 'riskScore', sortOrder: 'desc' };
+    if (windowDays !== 'all') {
+      filters['from'] = new Date(Date.now() - Number(windowDays) * 86_400_000).toISOString();
+    }
+    if (riskFilter !== 'all') filters['riskLevel'] = [riskFilter as RiskLevel];
+    return filters;
+  }, [windowDays, riskFilter]);
 
-  useEffect(() => {
-    setSelectedId(focusId);
-  }, [focusId]);
+  const hotspots = useApi(() => hotspotService.list(query), [JSON.stringify(query)]);
+  const facilities = useApi(() => industryService.list({ pageSize: 300 }), []);
+  const emergency = useApi(() => emergencyService.list({ pageSize: 500 }), []);
+  const boundary = useApi(() => bhopalService.boundary(), []);
 
-  const visible = useMemo(() => {
-    const items = hotspots.data?.items ?? [];
-    return items.filter(
-      (hotspot) =>
-        filters.eventTypes.includes(hotspot.eventType) && filters.riskLevels.includes(hotspot.riskLevel),
-    );
-  }, [hotspots.data, filters.eventTypes, filters.riskLevels]);
+  // Array.isArray rather than `?? []`: a non-array here is what produced the
+  // "emergencyItems.filter is not a function" crash, and a map page that
+  // silently shows zero receptors is far better than one that will not render.
+  const emergencyItems = Array.isArray(emergency.data?.items) ? emergency.data.items : [];
 
-  const nearby = useApi(
-    () =>
-      selected
-        ? geoService.facilitiesNear({
-            lat: selected.latitude,
-            lng: selected.longitude,
-            radiusKm: filters.radiusKm,
-            limit: 8,
-          })
-        : Promise.resolve([]),
-    [selected?.id, filters.radiusKm],
+  const counts = useMemo(
+    () => ({
+      hotspots: hotspots.data?.items.length ?? 0,
+      industry: facilities.data?.items.length ?? 0,
+      hospitals: emergencyItems.filter((facility) => facility.type === 'HOSPITAL').length,
+      fireStations: emergencyItems.filter((facility) => facility.type === 'FIRE_STATION').length,
+      schools: emergencyItems.filter((facility) => facility.type === 'SCHOOL').length,
+    }),
+    [hotspots.data, facilities.data, emergencyItems],
   );
 
   return (
-    <div className="space-y-4">
-      {/* --- Status strip ---------------------------------------------------- */}
-      <div className="flex flex-wrap items-center gap-3">
-        <Card className="flex items-center gap-4 px-4 py-2.5">
-          <span className="text-xs text-fg-muted">
-            Rendering <span className="tims-data font-semibold text-fg">{formatNumber(visible.length)}</span> of{' '}
-            <span className="tims-data">{formatNumber(hotspots.data?.items.length ?? 0)}</span> detections
-          </span>
-          <span className="h-4 w-px bg-line" aria-hidden />
-          <span className="text-xs text-fg-muted">
-            <span className="tims-data font-semibold text-fg">{formatNumber(facilities.data?.items.length ?? 0)}</span>{' '}
-            facilities
-          </span>
-        </Card>
+    <>
+      <Header
+        title="Live thermal map"
+        subtitle={`${counts.hotspots} detections plotted · Bhopal district geofence`}
+        onOpenNav={openNav}
+        actions={
+          <SegmentedControl
+            options={WINDOWS.map((option) => ({ value: option.value, label: option.label }))}
+            value={windowDays}
+            onChange={setWindowDays}
+          />
+        }
+      />
 
-        {postgis.data ? (
-          <span
-            className={cn(
-              'inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] font-medium ring-1 ring-inset',
-              postgis.data.available
-                ? 'bg-emerald-500/10 text-emerald-600 ring-emerald-500/25 dark:text-emerald-400'
-                : 'bg-amber-500/10 text-amber-600 ring-amber-500/25 dark:text-amber-400',
-            )}
-            title={postgis.data.reason ?? undefined}
-          >
-            <span className={cn('size-1.5 rounded-full', postgis.data.available ? 'bg-emerald-500' : 'bg-amber-500')} />
-            PostGIS {postgis.data.available ? postgis.data.version : 'unavailable'}
-          </span>
-        ) : null}
-
-        <button
-          type="button"
-          onClick={() => setPanelOpen((value) => !value)}
-          className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-line bg-surface px-3 py-2 text-xs font-medium text-fg-muted transition-colors hover:text-fg lg:hidden"
-        >
-          <Layers className="size-3.5" aria-hidden />
-          {panelOpen ? 'Hide' : 'Show'} controls
-        </button>
-      </div>
-
-      {/* --- Map ------------------------------------------------------------- */}
-      <Card className="relative overflow-hidden">
-        <div className="h-[calc(100vh-260px)] min-h-[480px]">
+      <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+        {/* --- Map ----------------------------------------------------- */}
+        <div className="relative min-h-[380px] flex-1 border-b border-line lg:border-b-0 lg:border-r">
           {hotspots.loading && !hotspots.data ? (
-            <LoadingState label="Loading thermal detections" minHeight={480} />
+            <LoadingState label="Loading detections" className="h-full" />
           ) : hotspots.error ? (
-            <ErrorState message={hotspots.error} onRetry={hotspots.refetch} />
+            <div className="p-3">
+              <ErrorState message={hotspots.error} onRetry={hotspots.refetch} />
+            </div>
           ) : (
-            <MapView
-              hotspots={visible}
+            <MapPanel
+              hotspots={hotspots.data?.items ?? []}
               facilities={facilities.data?.items ?? []}
-              showHotspots={filters.showHotspots}
-              showFacilities={filters.showFacilities}
-              radiusKm={filters.radiusKm}
-              selectedHotspotId={selectedId}
-              onSelectHotspot={(hotspot) => {
-                setSelected(hotspot);
-                setSelectedId(hotspot?.id ?? null);
-              }}
-              fitToData
+              emergencyFacilities={emergencyItems}
+              boundary={boundary.data}
+              layers={layers}
+              selectedId={selected?.id ?? null}
+              onSelectHotspot={setSelected}
+              focus={selected ? [selected.latitude, selected.longitude] : null}
+              impactCenter={selected ? [selected.latitude, selected.longitude] : null}
+              impactRadiiKm={[...THRESHOLDS.impactZonesKm]}
             />
           )}
-        </div>
 
-        {/* Controls float over the map on desktop, collapse to a drawer on mobile. */}
-        <div
-          className={cn(
-            'absolute right-3 top-3 z-[600] flex max-h-[calc(100%-24px)] flex-col gap-3 overflow-y-auto',
-            panelOpen ? 'flex' : 'hidden lg:flex',
-          )}
-        >
-          <MapFilters value={filters} onChange={setFilters} />
-          <MapLegend />
-        </div>
-      </Card>
-
-      {/* --- Nearest facilities for the selected detection -------------------- */}
-      {selected ? (
-        <Card>
-          <header className="flex items-start justify-between gap-4 border-b border-line px-5 py-3">
-            <div className="min-w-0">
-              <h2 className="text-sm font-semibold text-fg">
-                Facilities within {filters.radiusKm} km of the selected detection
-              </h2>
-              <p className="tims-data mt-0.5 truncate text-[11px] text-fg-subtle">
-                {selected.latitude.toFixed(4)}, {selected.longitude.toFixed(4)}
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => {
-                setSelected(null);
-                setSelectedId(null);
-              }}
-              className="grid size-7 place-items-center rounded-md text-fg-subtle ring-1 ring-inset ring-line hover:bg-surface-3"
-              aria-label="Clear selection"
-            >
-              <X className="size-3.5" aria-hidden />
-            </button>
-          </header>
-
-          <div className="p-5">
-            {nearby.loading ? (
-              <LoadingState label="Running PostGIS radius query" minHeight={100} />
-            ) : nearby.error ? (
-              <ErrorState message={nearby.error} onRetry={nearby.refetch} />
-            ) : (nearby.data?.length ?? 0) === 0 ? (
-              <p className="flex items-center gap-2 text-xs text-fg-muted">
-                <Search className="size-3.5" aria-hidden />
-                No registered industrial facility within {filters.radiusKm} km. Widen the analysis radius to search
-                further.
-              </p>
-            ) : (
-              <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                {(nearby.data ?? []).map((facility) => (
-                  <li
-                    key={facility.id}
-                    className="flex items-center justify-between gap-3 rounded-lg border border-line bg-surface-2 px-3 py-2"
-                  >
-                    <div className="min-w-0">
-                      <p className="truncate text-xs font-medium text-fg">{facility.name}</p>
-                      <p className="truncate text-[11px] text-fg-subtle">{facility.location}</p>
-                    </div>
-                    <span className="tims-data shrink-0 text-[11px] font-semibold text-primary">
-                      {(facility.distanceMeters / 1000).toFixed(2)} km
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
+          {/* Risk filter, floated over the map so it is reachable without
+              leaving the canvas. */}
+          <div className="absolute right-2 top-2 z-[400]">
+            <SegmentedControl
+              options={RISK_FILTERS.map((option) => ({
+                value: option.value,
+                label: option.label,
+                color: option.value === 'all' ? undefined : riskColor(option.value as RiskLevel, theme),
+              }))}
+              value={riskFilter}
+              onChange={setRiskFilter}
+              className="bg-bg/92 backdrop-blur"
+            />
           </div>
-        </Card>
-      ) : null}
-    </div>
+        </div>
+
+        {/* --- Right rail --------------------------------------------- */}
+        <aside className="flex w-full flex-none flex-col overflow-y-auto lg:w-[288px]">
+          {selected ? (
+            <Panel className="border-0 border-b">
+              <PanelHeader
+                label="Selected detection"
+                actions={
+                  <button
+                    type="button"
+                    onClick={() => setSelected(null)}
+                    className="tims-nav-item tims-data border border-line px-1.5 py-0.5 text-[10px] text-fg-muted hover:text-fg"
+                  >
+                    Clear
+                  </button>
+                }
+              />
+              <PanelBody className="space-y-2">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <RiskBadge level={selected.riskLevel} score={selected.riskScore} />
+                  <ClassBadge thermalClass={selected.mlClass} compact />
+                  <ProvenanceBadge
+                    path={selected.classificationPath}
+                    confidence={selected.mlConfidence}
+                    modelVersion={selected.modelVersion}
+                  />
+                </div>
+
+                <ReadoutList>
+                  <Readout label="Detected" value={formatDateTime(selected.detectedAt)} mono={false} />
+                  <Readout
+                    label="Position"
+                    value={formatCoordinatePair(selected.latitude, selected.longitude)}
+                  />
+                  <Readout label="Brightness" value={formatTemperature(selected.brightnessTemperature)} />
+                  <Readout label="FRP" value={formatPower(selected.frp)} />
+                  <Readout label="Confidence" value={`${selected.confidence}%`} />
+                  <Readout label="Persistence" value={`${selected.persistenceDays} day(s)`} />
+                  <Readout
+                    label="Nearest industry"
+                    value={
+                      selected.distanceToFacilityM != null
+                        ? formatDistance(selected.distanceToFacilityM)
+                        : 'none on record'
+                    }
+                  />
+                  {selected.industrialFacility ? (
+                    <Readout
+                      label="Facility"
+                      value={selected.industrialFacility.name}
+                      mono={false}
+                    />
+                  ) : null}
+                  <Readout
+                    label="In geofence"
+                    value={selected.inBhopalBoundary ? 'yes (ST_Within)' : 'no'}
+                  />
+                </ReadoutList>
+
+                <button
+                  type="button"
+                  onClick={() => router.push(`/dashboard/hotspots/${selected.id}`)}
+                  className="tims-nav-item w-full border border-rust bg-rust/12 px-2 py-1.5 text-[11px] text-rust hover:bg-rust/20"
+                >
+                  Open full investigation →
+                </button>
+              </PanelBody>
+            </Panel>
+          ) : null}
+
+          <Panel className="border-0 border-b">
+            <PanelHeader label="Layers" />
+            <MapControls layers={layers} onChange={setLayers} counts={counts} />
+          </Panel>
+
+          <Panel className="border-0">
+            <PanelHeader label="Geofence" />
+            <PanelBody>
+              <ReadoutList>
+                <Readout label="District" value={boundary.data?.name ?? '—'} mono={false} />
+                <Readout
+                  label="Area"
+                  value={boundary.data ? `${boundary.data.areaKm2.toLocaleString('en-IN')} km²` : '—'}
+                />
+                <Readout
+                  label="Fetch bbox"
+                  value={`${BHOPAL_BBOX.minLng},${BHOPAL_BBOX.minLat} → ${BHOPAL_BBOX.maxLng},${BHOPAL_BBOX.maxLat}`}
+                />
+                <Readout label="Source" value={boundary.data?.source ?? '—'} mono={false} />
+                <Readout label="Licence" value={boundary.data?.license ?? '—'} />
+              </ReadoutList>
+              <Caveat className="mt-2">
+                The polygon is the authoritative geofence. The bounding box is only a pre-filter for
+                requesting data from NASA FIRMS and Overpass.
+              </Caveat>
+              <Caveat className="mt-1.5">{DISCLAIMERS.decisionSupport}</Caveat>
+            </PanelBody>
+          </Panel>
+        </aside>
+      </div>
+    </>
   );
 }

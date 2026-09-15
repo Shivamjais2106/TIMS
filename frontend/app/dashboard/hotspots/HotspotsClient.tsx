@@ -1,312 +1,309 @@
 'use client';
 
-import { Filter, MapPin, Search, X } from 'lucide-react';
-import Link from 'next/link';
-import { useSearchParams } from 'next/navigation';
-import { useEffect, useState } from 'react';
-import { HotspotPopup } from '@/components/map/HotspotPopup';
-import { Card } from '@/components/ui/Card';
-import { DataTable, type Column } from '@/components/ui/DataTable';
-import { ErrorState } from '@/components/ui/EmptyState';
-import { Input, Select } from '@/components/ui/Input';
-import { RiskIndicator } from '@/components/ui/RiskIndicator';
+import { useRouter } from 'next/navigation';
+import { useState } from 'react';
+import { Header } from '@/components/layout/Header';
+import { SegmentedControl } from '@/components/ui/Button';
+import { DataTable, Pagination, type Column } from '@/components/ui/DataTable';
+import {
+  ClassBadge,
+  PersistenceBadge,
+  ProvenanceBadge,
+  RiskMeter,
+} from '@/components/ui/Indicators';
+import { SearchInput, Select } from '@/components/ui/Input';
+import { Panel, PanelHeader } from '@/components/ui/Panel';
+import { EmptyState, ErrorState, LoadingState } from '@/components/ui/States';
 import { useHotspots } from '@/hooks/useHotspots';
-import { EVENT_TYPES, EVENT_TYPE_META, RISK_LEVELS, RISK_META } from '@/lib/constants';
-import { formatDateTimeShort, formatNumber, formatTemperature, humanise } from '@/lib/format';
-import type { EventType, Hotspot, RiskLevel } from '@/types';
+import { useTheme } from '@/hooks/useTheme';
+import { useNavOpener } from '../DashboardShell';
+import {
+  describeFirmsProduct,
+  riskColor,
+  THERMAL_CLASSES,
+  THERMAL_CLASS_META,
+} from '@/lib/constants';
+import {
+  formatCoordinatePair,
+  formatDateTimeShort,
+  formatDistance,
+  formatPower,
+  formatTemperature,
+} from '@/lib/format';
+import type { Hotspot, RiskLevel } from '@/types';
 
-const COLUMNS: Column<Hotspot>[] = [
-  {
-    key: 'event',
-    header: 'Event',
-    render: (hotspot) => {
-      const meta = EVENT_TYPE_META[hotspot.eventType];
-      return (
-        <div className="flex items-center gap-2.5">
-          <span className="size-2.5 shrink-0 rounded-full" style={{ backgroundColor: meta.color }} aria-hidden />
-          <div className="min-w-0">
-            <p className="truncate text-xs font-medium text-fg">{meta.label}</p>
-            <p className="tims-data truncate text-[10px] text-fg-subtle">
-              {hotspot.latitude.toFixed(4)}, {hotspot.longitude.toFixed(4)}
-            </p>
-          </div>
-        </div>
-      );
-    },
-  },
-  {
-    key: 'detectedAt',
-    header: 'Detected',
-    hideOnMobile: true,
-    className: 'whitespace-nowrap',
-    render: (hotspot) => (
-      <span className="tims-data text-xs text-fg-muted">{formatDateTimeShort(hotspot.detectedAt)}</span>
-    ),
-  },
-  {
-    key: 'facility',
-    header: 'Nearest facility',
-    hideOnMobile: true,
-    render: (hotspot) =>
-      hotspot.industrialFacility ? (
-        <div className="min-w-0">
-          <p className="truncate text-xs text-fg">{hotspot.industrialFacility.name}</p>
-          <p className="truncate text-[10px] text-fg-subtle">
-            {hotspot.distanceToFacilityM != null
-              ? `${(hotspot.distanceToFacilityM / 1000).toFixed(2)} km away`
-              : hotspot.industrialFacility.location}
-          </p>
-        </div>
-      ) : (
-        <span className="text-xs text-fg-subtle">&mdash;</span>
-      ),
-  },
-  {
-    key: 'brightness',
-    header: 'Brightness',
-    hideOnMobile: true,
-    render: (hotspot) => (
-      <span className="tims-data text-xs text-fg-muted">{formatTemperature(hotspot.brightnessTemperature)}</span>
-    ),
-  },
-  {
-    key: 'persistence',
-    header: 'Persistence',
-    hideOnMobile: true,
-    render: (hotspot) => (
-      <span className="tims-data text-xs text-fg-muted">{hotspot.persistenceDays}d</span>
-    ),
-  },
-  {
-    key: 'confidence',
-    header: 'Conf.',
-    hideOnMobile: true,
-    render: (hotspot) => <span className="tims-data text-xs text-fg-muted">{hotspot.confidence}%</span>,
-  },
-  {
-    key: 'risk',
-    header: 'Risk',
-    className: 'whitespace-nowrap',
-    render: (hotspot) => (
-      <div className="flex w-[92px] items-center">
-        <RiskIndicator score={hotspot.riskScore} level={hotspot.riskLevel} />
-      </div>
-    ),
-  },
-];
+const RISK_OPTIONS = [
+  { value: 'all', label: 'All risk' },
+  { value: 'CRITICAL', label: 'Critical' },
+  { value: 'HIGH', label: 'High' },
+  { value: 'MEDIUM', label: 'Medium' },
+  { value: 'LOW', label: 'Low' },
+] as const;
 
+/**
+ * Detection register.
+ *
+ * Sorting is server-side (the API takes sortBy/sortOrder) so ordering applies
+ * across the whole result set rather than only the current page — sorting a
+ * single page of a 1,300-row table would be actively misleading.
+ */
 export function HotspotsClient() {
-  const searchParams = useSearchParams();
-  const focusId = searchParams.get('focus');
+  const router = useRouter();
+  const openNav = useNavOpener();
+  const { theme } = useTheme();
 
-  const { filters, setFilters, setPage, hotspots, meta, loading, error, refetch } = useHotspots({ pageSize: 25 });
-  const [selected, setSelected] = useState<Hotspot | null>(null);
+  const { filters, setFilters, setPage, hotspots, meta, loading, error, refetch } = useHotspots({
+    pageSize: 40,
+    sortBy: 'detectedAt',
+    sortOrder: 'desc',
+  });
 
-  // Deep link from the map: open the matching row's detail panel.
-  useEffect(() => {
-    if (!focusId) return;
-    const match = hotspots.find((hotspot) => hotspot.id === focusId);
-    if (match) setSelected(match);
-  }, [focusId, hotspots]);
+  const [riskFilter, setRiskFilter] = useState<string>('all');
 
-  const activeFilterCount =
-    (filters.eventType?.length ?? 0) +
-    (filters.riskLevel?.length ?? 0) +
-    (filters.persistentOnly ? 1 : 0) +
-    (filters.minConfidence ? 1 : 0);
-
-  function toggleEventType(type: EventType) {
-    const current = filters.eventType ?? [];
-    setFilters({ eventType: current.includes(type) ? current.filter((t) => t !== type) : [...current, type] });
+  function onRiskChange(value: string) {
+    setRiskFilter(value);
+    setFilters({ riskLevel: value === 'all' ? undefined : [value as RiskLevel] });
   }
 
-  function toggleRiskLevel(level: RiskLevel) {
-    const current = filters.riskLevel ?? [];
-    setFilters({ riskLevel: current.includes(level) ? current.filter((l) => l !== level) : [...current, level] });
+  function onSort(key: string) {
+    const nextOrder = filters.sortBy === key && filters.sortOrder === 'desc' ? 'asc' : 'desc';
+    setFilters({
+      sortBy: key as typeof filters.sortBy,
+      sortOrder: nextOrder,
+      page: filters.page,
+    });
   }
+
+  const columns: Array<Column<Hotspot>> = [
+    {
+      key: 'risk',
+      header: 'Risk',
+      sortKey: 'riskScore',
+      width: '104px',
+      render: (row) => <RiskMeter score={row.riskScore} level={row.riskLevel} />,
+    },
+    {
+      key: 'class',
+      header: 'Classification',
+      render: (row) => (
+        <span className="flex flex-wrap items-center gap-1">
+          <ClassBadge thermalClass={row.mlClass} compact />
+          <ProvenanceBadge
+            path={row.classificationPath}
+            confidence={row.mlConfidence}
+            modelVersion={row.modelVersion}
+          />
+        </span>
+      ),
+    },
+    {
+      key: 'detectedAt',
+      header: 'Detected (IST)',
+      sortKey: 'detectedAt',
+      numeric: true,
+      width: '112px',
+      render: (row) => formatDateTimeShort(row.detectedAt),
+    },
+    {
+      key: 'frp',
+      header: 'FRP',
+      numeric: true,
+      width: '78px',
+      render: (row) => formatPower(row.frp),
+    },
+    {
+      key: 'brightness',
+      header: 'Brightness',
+      sortKey: 'brightnessTemperature',
+      numeric: true,
+      width: '86px',
+      secondary: true,
+      render: (row) => formatTemperature(row.brightnessTemperature),
+    },
+    {
+      key: 'confidence',
+      header: 'Conf.',
+      sortKey: 'confidence',
+      numeric: true,
+      width: '58px',
+      render: (row) => `${row.confidence}%`,
+    },
+    {
+      key: 'persistence',
+      header: 'Persist',
+      sortKey: 'persistenceDays',
+      numeric: true,
+      width: '66px',
+      render: (row) => <PersistenceBadge days={row.persistenceDays} />,
+    },
+    {
+      key: 'distance',
+      header: 'To industry',
+      numeric: true,
+      width: '92px',
+      render: (row) =>
+        row.distanceToFacilityM != null ? formatDistance(row.distanceToFacilityM) : '—',
+    },
+    {
+      key: 'product',
+      header: 'Product',
+      width: '132px',
+      secondary: true,
+      render: (row) => {
+        const product = describeFirmsProduct(row.firmsProduct);
+        return (
+          <span
+            className="tims-data text-[10px] text-fg-muted"
+            title={
+              product.latency === 'archive'
+                ? 'Read from the FIRMS archive — historical, not near-real-time.'
+                : 'Near-real-time FIRMS product.'
+            }
+          >
+            {product.label}
+          </span>
+        );
+      },
+    },
+    {
+      key: 'position',
+      header: 'Position',
+      numeric: true,
+      width: '150px',
+      secondary: true,
+      render: (row) => (
+        <span className="text-[10px] text-fg-muted">
+          {formatCoordinatePair(row.latitude, row.longitude)}
+        </span>
+      ),
+    },
+  ];
 
   return (
-    <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_300px]">
-      <div className="space-y-4">
-        {/* --- Filter bar --------------------------------------------------- */}
-        <Card>
-          <div className="flex flex-col gap-3 p-4">
-            <div className="flex flex-wrap items-center gap-3">
-              <div className="min-w-[220px] flex-1">
-                <Input
-                  name="search"
-                  placeholder="Search by ID, region or facility"
-                  value={filters.search ?? ''}
-                  onChange={(event) => setFilters({ search: event.target.value })}
-                  icon={<Search className="size-4" aria-hidden />}
-                />
-              </div>
+    <>
+      <Header
+        title="Hotspot register"
+        subtitle={`${meta?.total ?? 0} detections inside the Bhopal district geofence`}
+        onOpenNav={openNav}
+      />
 
-              <Select
-                name="sortBy"
-                value={filters.sortBy ?? 'detectedAt'}
-                onChange={(event) => setFilters({ sortBy: event.target.value as typeof filters.sortBy })}
-                className="w-auto min-w-[150px]"
-              >
-                <option value="detectedAt">Newest first</option>
-                <option value="riskScore">Highest risk</option>
-                <option value="brightnessTemperature">Hottest</option>
-                <option value="persistenceDays">Most persistent</option>
-                <option value="confidence">Highest confidence</option>
-              </Select>
+      <div className="flex-1 overflow-y-auto p-3">
+        <Panel>
+          <PanelHeader
+            label="Detection register"
+            meta={loading ? 'loading' : `${meta?.total ?? 0} records`}
+            actions={
+              <SegmentedControl
+                options={RISK_OPTIONS.map((option) => ({
+                  value: option.value,
+                  label: option.label,
+                  color: option.value === 'all' ? undefined : riskColor(option.value as RiskLevel, theme),
+                }))}
+                value={riskFilter}
+                onChange={onRiskChange}
+              />
+            }
+          />
 
-              <label className="inline-flex cursor-pointer select-none items-center gap-2 rounded-lg border border-line bg-surface-2 px-3 py-2 text-xs text-fg-muted">
-                <input
-                  type="checkbox"
-                  checked={filters.persistentOnly ?? false}
-                  onChange={(event) => setFilters({ persistentOnly: event.target.checked || undefined })}
-                  className="accent-[var(--tims-primary)]"
-                />
-                Persistent only
-              </label>
-
-              {activeFilterCount > 0 ? (
-                <button
-                  type="button"
-                  onClick={() => setFilters({ eventType: [], riskLevel: [], persistentOnly: undefined, search: '' })}
-                  className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
-                >
-                  <X className="size-3" aria-hidden />
-                  Clear ({activeFilterCount})
-                </button>
-              ) : null}
-            </div>
-
-            <div className="flex flex-wrap items-center gap-1.5">
-              <Filter className="size-3 text-fg-subtle" aria-hidden />
-              {EVENT_TYPES.map((type) => {
-                const active = filters.eventType?.includes(type) ?? false;
-                return (
-                  <button
-                    key={type}
-                    type="button"
-                    onClick={() => toggleEventType(type)}
-                    aria-pressed={active}
-                    className="rounded-md px-2 py-1 text-[11px] font-medium ring-1 ring-inset transition-colors"
-                    style={
-                      active
-                        ? {
-                            backgroundColor: `${EVENT_TYPE_META[type].color}1f`,
-                            color: EVENT_TYPE_META[type].color,
-                            boxShadow: `inset 0 0 0 1px ${EVENT_TYPE_META[type].color}55`,
-                          }
-                        : undefined
-                    }
-                  >
-                    {EVENT_TYPE_META[type].shortLabel}
-                  </button>
-                );
-              })}
-
-              <span className="mx-1 h-4 w-px bg-line" aria-hidden />
-
-              {RISK_LEVELS.map((level) => {
-                const active = filters.riskLevel?.includes(level) ?? false;
-                return (
-                  <button
-                    key={level}
-                    type="button"
-                    onClick={() => toggleRiskLevel(level)}
-                    aria-pressed={active}
-                    className="rounded-md px-2 py-1 text-[11px] font-semibold uppercase ring-1 ring-inset transition-colors"
-                    style={
-                      active
-                        ? {
-                            backgroundColor: `${RISK_META[level].color}1f`,
-                            color: RISK_META[level].color,
-                            boxShadow: `inset 0 0 0 1px ${RISK_META[level].color}55`,
-                          }
-                        : undefined
-                    }
-                  >
-                    {RISK_META[level].label}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        </Card>
-
-        {/* --- Table --------------------------------------------------------- */}
-        <Card className="overflow-hidden">
-          <header className="flex items-center justify-between gap-3 border-b border-line px-5 py-3">
-            <h2 className="text-sm font-semibold text-fg">
-              {meta ? `${formatNumber(meta.total)} detections` : 'Detections'}
-            </h2>
-            {loading && hotspots.length > 0 ? (
-              <span className="text-[11px] text-fg-subtle">Updating…</span>
-            ) : null}
-          </header>
-
-          {error ? (
-            <ErrorState message={error} onRetry={refetch} />
-          ) : (
-            <DataTable
-              columns={COLUMNS}
-              rows={hotspots}
-              rowKey={(hotspot) => hotspot.id}
-              loading={loading}
-              onRowClick={setSelected}
-              meta={meta}
-              onPageChange={setPage}
-              emptyTitle="No detections match these filters"
-              emptyDescription="Try clearing the event type or risk filters, or widening the time window."
+          {/* --- Filter bar ------------------------------------------- */}
+          <div className="flex flex-wrap items-end gap-2 border-b border-line bg-surface-2 px-3 py-2">
+            <SearchInput
+              value={filters.search ?? ''}
+              onChange={(value) => setFilters({ search: value })}
+              placeholder="Search facility, region or id"
+              className="min-w-[200px] flex-1"
             />
-          )}
-        </Card>
-      </div>
 
-      {/* --- Detail panel ----------------------------------------------------- */}
-      <aside className="xl:sticky xl:top-[84px] xl:self-start">
-        {selected ? (
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <h2 className="text-xs font-semibold uppercase tracking-wide text-fg-subtle">Detection detail</h2>
-              <button
-                type="button"
-                onClick={() => setSelected(null)}
-                className="grid size-6 place-items-center rounded-md text-fg-subtle hover:bg-surface-3"
-                aria-label="Close detail panel"
-              >
-                <X className="size-3.5" aria-hidden />
-              </button>
-            </div>
-
-            <div className="overflow-hidden rounded-xl border border-line">
-              <HotspotPopup hotspot={selected} />
-            </div>
-
-            <Link
-              href={`/dashboard/map?focus=${selected.id}`}
-              className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-line bg-surface px-3 py-2 text-xs font-medium text-fg transition-colors hover:bg-surface-3"
+            <Select
+              label="Classification"
+              value={filters.eventType?.[0] ?? ''}
+              onChange={(event) => {
+                // The API filters on the legacy EventType taxonomy, so the
+                // hedged class shown in the UI is mapped back to it here.
+                const value = event.target.value;
+                const mapping: Record<string, string> = {
+                  POSSIBLE_INDUSTRIAL_FIRE: 'INDUSTRIAL_FIRE',
+                  POSSIBLE_PERSISTENT_THERMAL_SOURCE: 'GAS_FLARE',
+                  POSSIBLE_VEGETATION_FIRE: 'FOREST_FIRE',
+                  POSSIBLE_AGRICULTURAL_BURN: 'AGRICULTURAL_FIRE',
+                  UNKNOWN: 'OTHER',
+                };
+                setFilters({
+                  eventType: value ? [mapping[value] as never] : undefined,
+                });
+              }}
+              className="w-[190px]"
             >
-              <MapPin className="size-3.5" aria-hidden />
-              Locate on map
-            </Link>
-          </div>
-        ) : (
-          <Card>
-            <div className="px-5 py-10 text-center">
-              <span className="mx-auto grid size-10 place-items-center rounded-full bg-surface-3 text-fg-subtle">
-                <MapPin className="size-4" aria-hidden />
-              </span>
-              <p className="mt-3 text-sm font-medium text-fg">Select a detection</p>
-              <p className="mt-1 text-xs text-fg-muted">
-                Click any row to inspect coordinates, thermal signature, persistence and the nearest facility.
-              </p>
-            </div>
-          </Card>
-        )}
+              <option value="">All classes</option>
+              {THERMAL_CLASSES.map((key) => (
+                <option key={key} value={key}>
+                  {THERMAL_CLASS_META[key].label}
+                </option>
+              ))}
+            </Select>
 
-        <p className="mt-3 px-1 text-[11px] leading-relaxed text-fg-subtle">
-          Event classes: {EVENT_TYPES.map((type) => humanise(type)).join(', ')}.
-        </p>
-      </aside>
-    </div>
+            <Select
+              label="Min risk score"
+              value={String(filters.minRiskScore ?? '')}
+              onChange={(event) =>
+                setFilters({
+                  minRiskScore: event.target.value ? Number(event.target.value) : undefined,
+                })
+              }
+              className="w-[120px]"
+            >
+              <option value="">Any</option>
+              <option value="31">31+ medium</option>
+              <option value="61">61+ high</option>
+              <option value="81">81+ critical</option>
+            </Select>
+
+            <label className="flex items-center gap-1.5 pb-1.5">
+              <input
+                type="checkbox"
+                checked={filters.persistentOnly ?? false}
+                onChange={(event) => setFilters({ persistentOnly: event.target.checked || undefined })}
+                className="size-3 accent-rust"
+              />
+              <span className="text-[11px] text-fg-muted">Persistent only</span>
+            </label>
+          </div>
+
+          {loading && hotspots.length === 0 ? (
+            <LoadingState label="Loading register" />
+          ) : error ? (
+            <div className="p-3">
+              <ErrorState message={error} onRetry={refetch} />
+            </div>
+          ) : hotspots.length === 0 ? (
+            <EmptyState
+              title="No detections match these filters"
+              detail="Try widening the risk filter or clearing the search term."
+            />
+          ) : (
+            <>
+              <DataTable
+                columns={columns}
+                rows={hotspots}
+                rowKey={(row) => row.id}
+                onRowClick={(row) => router.push(`/dashboard/hotspots/${row.id}`)}
+                sortBy={filters.sortBy}
+                sortOrder={filters.sortOrder}
+                onSort={onSort}
+              />
+              {meta ? (
+                <Pagination
+                  page={meta.page}
+                  pageSize={meta.pageSize}
+                  total={meta.total}
+                  totalPages={meta.totalPages}
+                  onPageChange={setPage}
+                />
+              ) : null}
+            </>
+          )}
+        </Panel>
+      </div>
+    </>
   );
 }

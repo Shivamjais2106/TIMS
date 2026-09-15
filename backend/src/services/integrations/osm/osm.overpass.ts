@@ -1,7 +1,12 @@
 import { env } from '../../../config/env';
-import type { FacilityType, RiskLevel } from '../../../generated/prisma/enums';
+import type { EmergencyFacilityType, FacilityType, RiskLevel } from '../../../generated/prisma/enums';
 import { createLogger } from '../../../utils/logger';
-import type { OsmFacility, OsmFetchParams, OsmProvider } from './osm.types';
+import type {
+  OsmEmergencyFacility,
+  OsmFacility,
+  OsmFetchParams,
+  OsmProvider,
+} from './osm.types';
 
 const log = createLogger('osm:overpass');
 
@@ -21,23 +26,30 @@ interface OverpassResponse {
 /**
  * Maps OSM tagging onto our FacilityType enum.
  *
- * OSM tags industrial sites inconsistently, so the order here matters: the most
- * specific tag combination is checked first.
+ * Order matters: the most specific tag combination is checked first, because
+ * a site can carry several of these tags at once.
  */
 function classifyFacility(tags: Record<string, string>): FacilityType {
   const industrial = tags['industrial'] ?? '';
   const manMade = tags['man_made'] ?? '';
   const power = tags['power'] ?? '';
-  const product = tags['product'] ?? '';
+  const plantSource = tags['plant:source'] ?? '';
+  const product = (tags['product'] ?? '').toLowerCase();
   const landuse = tags['landuse'] ?? '';
+  const craft = tags['craft'] ?? '';
+  const name = (tags['name'] ?? '').toLowerCase();
 
-  if (industrial === 'oil' || manMade === 'petroleum_well' || tags['refinery'] !== undefined) return 'REFINERY';
-  if (industrial === 'refinery') return 'REFINERY';
-  if (industrial === 'chemical' || industrial === 'petrochemical') return 'PETROCHEMICAL';
-  if (power === 'plant' || manMade === 'works' && product.includes('electricity')) return 'POWER_PLANT';
+  if (industrial === 'refinery' || industrial === 'oil' || product.includes('petroleum')) return 'REFINERY';
+  if (industrial === 'chemical' || industrial === 'petrochemical' || product.includes('chemical')) {
+    return 'PETROCHEMICAL';
+  }
+  if (power === 'plant' || plantSource.length > 0) return 'POWER_PLANT';
   if (product.includes('lng') || tags['pipeline'] === 'lng') return 'LNG_TERMINAL';
-  if (industrial === 'steel' || product.includes('steel')) return 'STEEL';
+  if (industrial === 'steel' || product.includes('steel') || name.includes('steel')) return 'STEEL';
   if (landuse === 'quarry' || industrial === 'mine' || manMade === 'mineshaft') return 'MINING';
+  // Brick kilns are a dominant persistent thermal source across central India
+  // and are tagged inconsistently, so both the craft tag and the name are used.
+  if (craft === 'brickyard' || name.includes('brick') || name.includes('kiln')) return 'OTHER';
   return 'OTHER';
 }
 
@@ -57,68 +69,162 @@ function defaultRiskLevel(type: FacilityType): RiskLevel {
   }
 }
 
-function buildQuery(bbox: [number, number, number, number], limit: number): string {
-  const [minLon, minLat, maxLon, maxLat] = bbox;
-  // Overpass expects south,west,north,east.
-  const area = `${minLat},${minLon},${maxLat},${maxLon}`;
+function classifyEmergency(tags: Record<string, string>): EmergencyFacilityType | null {
+  switch (tags['amenity']) {
+    case 'hospital':
+    case 'clinic':
+      return 'HOSPITAL';
+    case 'fire_station':
+      return 'FIRE_STATION';
+    case 'school':
+    case 'college':
+    case 'university':
+      return 'SCHOOL';
+    case 'police':
+      return 'POLICE';
+    case 'shelter':
+      return 'SHELTER';
+    default:
+      break;
+  }
+  if (tags['emergency'] === 'water_tank' || tags['man_made'] === 'water_tower') return 'WATER_SOURCE';
+  return null;
+}
 
+/** Overpass expects south,west,north,east — the reverse of our bbox order. */
+function toOverpassArea(bbox: [number, number, number, number]): string {
+  const [minLng, minLat, maxLng, maxLat] = bbox;
+  return `${minLat},${minLng},${maxLat},${maxLng}`;
+}
+
+function buildIndustrialQuery(bbox: [number, number, number, number], limit: number): string {
+  const area = toOverpassArea(bbox);
   return `
     [out:json][timeout:120];
     (
-      nwr["industrial"~"oil|refinery|chemical|petrochemical|steel|mine"](${area});
+      nwr["landuse"="industrial"](${area});
       nwr["man_made"="works"](${area});
       nwr["power"="plant"](${area});
+      nwr["industrial"](${area});
+      nwr["craft"="brickyard"](${area});
       nwr["landuse"="quarry"](${area});
     );
-    out center ${limit};
+    out center tags ${limit};
   `.trim();
+}
+
+function buildEmergencyQuery(bbox: [number, number, number, number], limit: number): string {
+  const area = toOverpassArea(bbox);
+  return `
+    [out:json][timeout:120];
+    (
+      nwr["amenity"="hospital"](${area});
+      nwr["amenity"="clinic"](${area});
+      nwr["amenity"="fire_station"](${area});
+      nwr["amenity"="school"](${area});
+      nwr["amenity"="police"](${area});
+      nwr["amenity"="shelter"](${area});
+    );
+    out center tags ${limit};
+  `.trim();
+}
+
+/** Human-readable place from whichever address tags OSM happens to carry. */
+function resolveLocation(tags: Record<string, string>): string {
+  return (
+    tags['addr:suburb'] ??
+    tags['addr:city'] ??
+    tags['addr:district'] ??
+    tags['addr:state'] ??
+    'Bhopal'
+  );
+}
+
+function resolveAddress(tags: Record<string, string>): string | null {
+  const parts = [
+    tags['addr:housenumber'],
+    tags['addr:street'],
+    tags['addr:suburb'],
+    tags['addr:city'],
+    tags['addr:postcode'],
+  ].filter((part): part is string => Boolean(part));
+  return parts.length > 0 ? parts.join(', ') : null;
 }
 
 /**
  * Live OpenStreetMap provider backed by the Overpass API.
  *
- * Gated behind OSM_ENABLED because Overpass rate-limits aggressively and a
- * country-scale query can take minutes — not something a dev server should do
- * on every boot.
+ * Overpass answers HTTP 406 to clients that do not send a User-Agent, and
+ * rate-limits aggressively, so both requests identify themselves and the two
+ * category queries are issued separately rather than as one giant union.
  */
 export class OverpassOsmProvider implements OsmProvider {
   readonly name = 'osm-overpass';
   readonly isLive = true;
 
-  async fetchFacilities(params: OsmFetchParams): Promise<OsmFacility[]> {
-    const limit = params.limit ?? 500;
-    const query = buildQuery(params.bbox, limit);
-
-    log.info('Querying Overpass', { bbox: params.bbox, limit });
+  private async query(data: string, label: string): Promise<OverpassElement[]> {
+    log.info(`Querying Overpass (${label})`);
 
     const response = await fetch(env.OSM_OVERPASS_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ data: query }).toString(),
-      signal: AbortSignal.timeout(120_000),
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        // Anonymous requests are rejected with HTTP 406 Not Acceptable.
+        'User-Agent': env.OSM_USER_AGENT,
+        Accept: 'application/json',
+      },
+      body: new URLSearchParams({ data }).toString(),
+      signal: AbortSignal.timeout(180_000),
     });
 
     if (!response.ok) {
-      throw new Error(`Overpass responded ${response.status} ${response.statusText}`);
+      const body = await response.text();
+      throw new Error(
+        `Overpass responded ${response.status} ${response.statusText} for ${label}: ${body.slice(0, 200).trim()}`,
+      );
     }
 
     const payload = (await response.json()) as OverpassResponse;
+    log.info(`Overpass returned ${payload.elements.length} element(s) for ${label}`);
+    return payload.elements;
+  }
 
-    return payload.elements
+  async fetchFacilities(params: OsmFetchParams): Promise<OsmFacility[]> {
+    const limit = params.limit ?? 2_000;
+    const elements = await this.query(buildIndustrialQuery(params.bbox, limit), 'industrial');
+
+    return elements
       .map((element) => this.toFacility(element))
       .filter((facility): facility is OsmFacility => facility !== null);
+  }
+
+  async fetchEmergencyFacilities(params: OsmFetchParams): Promise<OsmEmergencyFacility[]> {
+    const limit = params.limit ?? 2_000;
+    const elements = await this.query(buildEmergencyQuery(params.bbox, limit), 'emergency');
+
+    return elements
+      .map((element) => this.toEmergencyFacility(element))
+      .filter((facility): facility is OsmEmergencyFacility => facility !== null);
   }
 
   private toFacility(element: OverpassElement): OsmFacility | null {
     const tags = element.tags ?? {};
     const latitude = element.lat ?? element.center?.lat;
     const longitude = element.lon ?? element.center?.lon;
-    const name = tags['name'] ?? tags['operator'];
 
-    // Unnamed or geometry-less elements are noise for an operations dashboard.
-    if (latitude === undefined || longitude === undefined || !name) return null;
+    // Geometry is non-negotiable - without a coordinate the element cannot
+    // contribute to any spatial feature.
+    if (latitude === undefined || longitude === undefined) return null;
 
     const type = classifyFacility(tags);
+    const tagged = tags['name'] ?? tags['operator'];
+
+    // An earlier version dropped unnamed elements. In the Bhopal pilot bbox
+    // that discarded 70 of 82 industrial zones - every unnamed
+    // `landuse=industrial` polygon - which are exactly the zones the
+    // distance-to-facility feature needs. They are kept with a derived label
+    // and flagged so the UI can show the name is synthesised.
+    const name = tagged ?? `Industrial zone ${element.type}/${element.id}`;
 
     return {
       osmId: `${element.type}/${element.id}`,
@@ -126,9 +232,38 @@ export class OverpassOsmProvider implements OsmProvider {
       type,
       latitude,
       longitude,
-      location: tags['addr:city'] ?? tags['addr:state'] ?? tags['addr:district'] ?? 'Unknown',
+      location: resolveLocation(tags),
       riskLevel: defaultRiskLevel(type),
       operator: tags['operator'] ?? null,
+      nameDerived: tagged === undefined,
+    };
+  }
+
+  private toEmergencyFacility(element: OverpassElement): OsmEmergencyFacility | null {
+    const tags = element.tags ?? {};
+    const latitude = element.lat ?? element.center?.lat;
+    const longitude = element.lon ?? element.center?.lon;
+    if (latitude === undefined || longitude === undefined) return null;
+
+    const type = classifyEmergency(tags);
+    if (type === null) return null;
+
+    const tagged = tags['name'];
+    const label = type.replace(/_/g, ' ').toLowerCase();
+
+    return {
+      osmId: `${element.type}/${element.id}`,
+      name: tagged ?? `Unnamed ${label} (${element.type}/${element.id})`,
+      type,
+      latitude,
+      longitude,
+      address: resolveAddress(tags),
+      // Never invented: null when OSM does not state a capacity.
+      capacity: tags['capacity:beds'] ?? tags['beds'] ?? tags['capacity'] ?? null,
+      phone: tags['phone'] ?? tags['contact:phone'] ?? null,
+      operator: tags['operator'] ?? null,
+      ownership: tags['operator:type'] ?? tags['healthcare:ownership'] ?? null,
+      nameDerived: tagged === undefined,
     };
   }
 }

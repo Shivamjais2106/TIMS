@@ -1,33 +1,53 @@
+import Link from 'next/link';
+import { PILOT } from '@/lib/bhopal';
 import { cn } from '@/lib/utils';
 
 /**
- * TIMS mark: a satellite scan sweep over a thermal target.
- * Inline SVG so it inherits `currentColor` and needs no asset request.
+ * Wordmark.
+ *
+ * Plain monospace text. Deliberately no flame glyph, no gradient, no icon: the
+ * name of a monitoring station is set in the same type as its readouts.
  */
-export function Logo({ className }: { className?: string }) {
+export function Wordmark({
+  href = '/',
+  showPilot = true,
+  className,
+}: {
+  href?: string | null;
+  showPilot?: boolean;
+  className?: string;
+}) {
+  const content = (
+    <span className={cn('flex items-baseline gap-2', className)}>
+      <span className="tims-data text-[15px] font-semibold tracking-[0.16em] text-fg">TIMS</span>
+      {showPilot ? (
+        <>
+          <span className="text-[13px] font-normal text-fg-subtle" aria-hidden>
+            /
+          </span>
+          <span className="tims-data text-[11px] tracking-[0.12em] text-fg-muted">{PILOT.id}</span>
+        </>
+      ) : null}
+    </span>
+  );
+
+  if (!href) return content;
+
   return (
-    <svg viewBox="0 0 32 32" className={cn('size-7', className)} fill="none" aria-hidden>
-      <circle cx="16" cy="16" r="14" stroke="currentColor" strokeOpacity="0.28" strokeWidth="1.25" />
-      <circle cx="16" cy="16" r="9" stroke="currentColor" strokeOpacity="0.45" strokeWidth="1.25" />
-      <path d="M16 2v6M16 24v6M2 16h6M24 16h6" stroke="currentColor" strokeOpacity="0.5" strokeWidth="1.25" />
-      <path
-        d="M16 10.5c1.9 2.3 3.6 4 3.6 6.2a3.6 3.6 0 1 1-7.2 0c0-2.2 1.7-3.9 3.6-6.2Z"
-        fill="currentColor"
-      />
-    </svg>
+    <Link href={href} className="tims-nav-item -mx-1 px-1" aria-label="TIMS home">
+      {content}
+    </Link>
   );
 }
 
-export function Wordmark({ compact = false }: { compact?: boolean }) {
+/** Expanded lockup for the landing page and report headers. */
+export function WordmarkFull({ className }: { className?: string }) {
   return (
-    <div className="flex items-center gap-2.5 text-primary">
-      <Logo />
-      {compact ? null : (
-        <div className="leading-none">
-          <p className="text-[15px] font-semibold tracking-tight text-fg">TIMS</p>
-          <p className="mt-0.5 text-[10px] uppercase tracking-[0.14em] text-fg-subtle">Thermal Intelligence</p>
-        </div>
-      )}
+    <div className={className}>
+      <Wordmark href={null} />
+      <p className="mt-1 text-[10px] leading-tight text-fg-subtle">
+        Thermal Intelligence &amp; Monitoring System
+      </p>
     </div>
   );
 }

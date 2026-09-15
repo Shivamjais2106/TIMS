@@ -69,6 +69,57 @@ enum HotspotSource {
   MOCK
 }
 
+/// Output of the classification layer (ML service, or the rule fallback).
+/// Deliberately hedged: TIMS reports what a signature is *consistent with*,
+/// never an adjudicated fact. The UI renders these with the "Possible" prefix.
+enum ThermalClass {
+  POSSIBLE_INDUSTRIAL_FIRE
+  POSSIBLE_VEGETATION_FIRE
+  POSSIBLE_AGRICULTURAL_BURN
+  POSSIBLE_PERSISTENT_THERMAL_SOURCE
+  UNKNOWN
+}
+
+/// Which code path produced a classification. Surfaced in the UI so an analyst
+/// can always tell a model prediction from a degraded-mode rule guess.
+enum ClassificationPath {
+  ML_SERVICE
+  RULE_FALLBACK
+  UNCLASSIFIED
+}
+
+/// Non-industrial facilities that matter for emergency response and impact.
+enum EmergencyFacilityType {
+  HOSPITAL
+  FIRE_STATION
+  SCHOOL
+  POLICE
+  SHELTER
+  WATER_SOURCE
+}
+
+/// Alert triage lifecycle.
+enum AlertStatus {
+  OPEN
+  ACKNOWLEDGED
+  RESOLVED
+  DISMISSED
+}
+
+/// Operational state of an upstream data source, shown on the transparency page.
+enum DataSourceStatus {
+  LIVE
+  CREDENTIALS_REQUIRED
+  UNAVAILABLE
+  DEMO
+}
+
+enum ReportStatus {
+  QUEUED
+  READY
+  FAILED
+}
+
 // ---------------------------------------------------------------------------
 // Models
 // ---------------------------------------------------------------------------
@@ -83,6 +134,7 @@ model User {
   updatedAt    DateTime @updatedAt
 
   acknowledgedAlerts Alert[] @relation("AlertAcknowledgedBy")
+  requestedReports   Report[] @relation("ReportRequestedBy")
 
   @@index([role])
   @@map("users")
@@ -145,6 +197,33 @@ model Hotspot {
   /// Great-circle distance in metres to `industrialFacility`, computed by PostGIS at ingest.
   distanceToFacilityM  Float?
 
+  /// FIRMS `instrument` column (VIIRS / MODIS), kept alongside `satellite`.
+  instrument String?
+  /// The exact FIRMS product this row came from, e.g. "VIIRS_SNPP_SP".
+  ///
+  /// Distinct from `source`, which is a coarse enum with no NRT/SP distinction.
+  /// Recorded verbatim so the UI can state honestly whether a detection is
+  /// near-real-time or read from the archive.
+  firmsProduct String?
+
+  // --- Classification layer -------------------------------------------------
+  /// Hedged class from the ML service, or from the rule fallback when it is down.
+  mlClass            ThermalClass?
+  /// Model confidence 0-1. Null whenever mlClass came from the rule fallback.
+  mlConfidence       Float?
+  /// Provenance of `mlClass` — never hidden from the analyst.
+  classificationPath ClassificationPath @default(UNCLASSIFIED)
+  classifiedAt       DateTime?
+  /// Model artefact version, so a prediction stays traceable after a retrain.
+  modelVersion       String?
+
+  // --- Bhopal geofence ------------------------------------------------------
+  /// True when PostGIS ST_Within placed this point inside the Bhopal district
+  /// polygon. The bbox is only a fetch pre-filter, so this is the real test.
+  inBhopalBoundary Boolean @default(false)
+
+  riskAssessments RiskAssessment[]
+
   alerts Alert[]
 
   createdAt DateTime @default(now())
@@ -155,6 +234,9 @@ model Hotspot {
   @@index([riskLevel])
   @@index([industrialFacilityId])
   @@index([latitude, longitude])
+  @@index([mlClass])
+  @@index([firmsProduct])
+  @@index([inBhopalBoundary])
   @@map("hotspots")
 }
 
@@ -174,9 +256,214 @@ model Alert {
   acknowledgedBy   User?     @relation("AlertAcknowledgedBy", fields: [acknowledgedById], references: [id], onDelete: SetNull)
   acknowledgedAt   DateTime?
 
+  /// Triage lifecycle. `isRead` stays for the notification bell; this drives triage.
+  status AlertStatus @default(OPEN)
+  /// Why the risk engine fired, captured at alert time so later re-scoring
+  /// cannot rewrite history.
+  reasons String[]
+  resolvedAt DateTime?
+  resolutionNote String?
+
   @@index([isRead])
   @@index([severity])
   @@index([createdAt])
   @@index([hotspotId])
+  @@index([status])
   @@map("alerts")
+}
+
+// ---------------------------------------------------------------------------
+// Bhopal pilot — geofence, emergency response, context and transparency
+// ---------------------------------------------------------------------------
+
+/// Administrative polygons used as authoritative geofences.
+///
+/// Prisma cannot model a PostGIS `geometry` column, so the polygon itself lives
+/// in the `geom` column added by the accompanying migration and is only ever
+/// touched through raw SQL (ST_Within / ST_Intersects / ST_Simplify). The
+/// GeoJSON kept here is the simplified copy the frontend draws.
+model AdministrativeBoundary {
+  id        String  @id @default(cuid())
+  name      String
+  /// "district", "city", "ward" — matches OSM admin_level semantics.
+  level     String
+  state     String?
+  country   String  @default("India")
+  /// Stable upstream identity, e.g. "relation/1976080".
+  osmId     String? @unique
+  /// Simplified boundary (ST_Simplify) as a GeoJSON geometry, for map rendering.
+  /// The unsimplified geometry stays in the PostGIS `geom` column.
+  simplifiedGeoJson Json?
+  /// Cached envelope so the map can fit bounds without parsing the polygon.
+  minLng Float
+  minLat Float
+  maxLng Float
+  maxLat Float
+  /// Provenance, surfaced on the Data Sources page.
+  source      String
+  sourceUrl   String?
+  license     String?
+  attribution String?
+  retrievedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([name, level])
+  @@index([level])
+  @@map("administrative_boundaries")
+}
+
+/// Hospitals, fire stations, schools and other response/impact assets.
+///
+/// Separate from IndustrialFacility because the two answer different questions:
+/// an industrial facility is a possible *cause*, an emergency facility is a
+/// *response resource* or an *exposed receptor*.
+model EmergencyFacility {
+  id        String                @id @default(cuid())
+  name      String
+  type      EmergencyFacilityType
+  latitude  Float
+  longitude Float
+  address   String?
+  /// Free-text capacity note (bed count, appliance count). Never invented —
+  /// null when the upstream source does not state it.
+  capacity  String?
+  phone     String?
+  operator  String?
+  /// "government" | "private" | null when untagged upstream.
+  ownership String?
+  osmId     String?               @unique
+
+  source      String    @default("OpenStreetMap")
+  sourceUrl   String?
+  lastVerified DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([type])
+  @@index([latitude, longitude])
+  @@map("emergency_facilities")
+}
+
+/// Weather context for a point in time.
+///
+/// Context only. TIMS does not present weather as a validated fire-behaviour
+/// prediction, and `provider` records who supplied each observation.
+model WeatherObservation {
+  id            String    @id @default(cuid())
+  observedAt    DateTime
+  latitude      Float
+  longitude     Float
+  temperatureC  Float?
+  humidityPct   Float?
+  windSpeedMs   Float?
+  windDirectionDeg Float?
+  rainfallMm    Float?
+  /// Upstream warning text, when the provider issues one.
+  warning       String?
+  /// "IMD" | "open-meteo" | provider id. Never blank.
+  provider      String
+  sourceUrl     String?
+  /// Raw upstream payload, retained so a value can always be traced back.
+  raw           Json?
+
+  createdAt DateTime @default(now())
+
+  @@unique([provider, observedAt, latitude, longitude])
+  @@index([observedAt])
+  @@map("weather_observations")
+}
+
+/// A point-in-time, fully explained risk score for one hotspot.
+///
+/// Stored rather than computed on read so the score an analyst acted on can be
+/// audited later, even after weights change or the hotspot is re-scored.
+model RiskAssessment {
+  id        String    @id @default(cuid())
+  hotspotId String
+  hotspot   Hotspot   @relation(fields: [hotspotId], references: [id], onDelete: Cascade)
+
+  score Float
+  level RiskLevel
+  /// Human-readable drivers, e.g. "High FRP (49.9 MW)", "700 m from Acme Works".
+  reasons String[]
+  /// Per-component contributions, so the UI can show the score breakdown.
+  components Json
+  /// Weight set used, copied in so a later weight change cannot rewrite this.
+  weights    Json
+
+  /// Nearest response resources at assessment time, in metres.
+  nearestHospitalM    Float?
+  nearestFireStationM Float?
+
+  assessedAt DateTime @default(now())
+
+  @@index([hotspotId])
+  @@index([assessedAt])
+  @@index([level])
+  @@map("risk_assessments")
+}
+
+/// Registry backing the Data Sources transparency page.
+///
+/// One row per upstream provider, including the ones that are NOT wired up —
+/// an honest "credentials required" is the point of this table.
+model DataSource {
+  id          String           @id @default(cuid())
+  key         String           @unique
+  name        String
+  purpose     String
+  /// Whether TIMS is actually pulling from this source right now.
+  status      DataSourceStatus @default(UNAVAILABLE)
+  /// "every 30 minutes", "on demand", "one-off import".
+  updateFrequency String?
+  officialUrl String?
+  license     String?
+  attribution String?
+  /// True only where the operator is a verified government body.
+  isGovernment Boolean @default(false)
+  /// Explains a non-LIVE status, e.g. "Requires IMD API credentials".
+  statusNote  String?
+  lastSyncAt  DateTime?
+  lastSyncRecords Int?
+  lastSyncError String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@map("data_sources")
+}
+
+/// Generated situation reports.
+model Report {
+  id      String       @id @default(cuid())
+  title   String
+  /// "incident" | "daily" | "weekly" | "custom".
+  kind    String
+  status  ReportStatus @default(QUEUED)
+  /// Window the report covers.
+  periodStart DateTime
+  periodEnd   DateTime
+  /// Filters and options the report was generated with.
+  parameters  Json?
+  /// Denormalised headline figures, so history renders without re-querying.
+  summary     Json?
+  /// Row counts the report was built from.
+  hotspotCount Int @default(0)
+  alertCount   Int @default(0)
+
+  requestedById String?
+  requestedBy   User?   @relation("ReportRequestedBy", fields: [requestedById], references: [id], onDelete: SetNull)
+
+  createdAt   DateTime  @default(now())
+  completedAt DateTime?
+  error       String?
+
+  @@index([kind])
+  @@index([status])
+  @@index([createdAt])
+  @@map("reports")
 }

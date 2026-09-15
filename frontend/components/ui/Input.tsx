@@ -1,74 +1,109 @@
-'use client';
-
-import type { InputHTMLAttributes, ReactNode, SelectHTMLAttributes } from 'react';
+import type { InputHTMLAttributes, SelectHTMLAttributes } from 'react';
 import { cn } from '@/lib/utils';
 
-const FIELD_CLASS =
-  'w-full rounded-lg border border-line bg-surface-2 px-3 text-sm text-fg placeholder:text-fg-subtle ' +
-  'transition-colors focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary ' +
-  'disabled:cursor-not-allowed disabled:opacity-60';
-
-interface InputProps extends InputHTMLAttributes<HTMLInputElement> {
-  label?: string;
-  hint?: string;
-  error?: string;
-  /** Icon rendered inside the field, on the left. */
-  icon?: ReactNode;
-}
-
-export function Input({ label, hint, error, icon, className, id, ...props }: InputProps) {
-  const fieldId = id ?? props.name;
+/** Square text input with a mono channel label. */
+export function Input({
+  label,
+  hint,
+  error,
+  className,
+  id,
+  ...rest
+}: InputHTMLAttributes<HTMLInputElement> & { label?: string; hint?: string; error?: string }) {
+  const inputId = id ?? rest.name;
 
   return (
     <div className="w-full">
       {label ? (
-        <label htmlFor={fieldId} className="mb-1.5 block text-xs font-medium text-fg-muted">
+        <label htmlFor={inputId} className="tims-label mb-1 block">
           {label}
         </label>
       ) : null}
 
-      <div className="relative">
-        {icon ? (
-          <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-fg-subtle">{icon}</span>
-        ) : null}
-        <input
-          {...props}
-          id={fieldId}
-          aria-invalid={error ? true : undefined}
-          aria-describedby={error && fieldId ? `${fieldId}-error` : undefined}
-          className={cn(FIELD_CLASS, 'h-10', icon ? 'pl-9' : '', error ? 'border-red-500/60' : '', className)}
-        />
-      </div>
+      <input
+        id={inputId}
+        className={cn(
+          'w-full border border-line bg-surface-2 px-2.5 py-1.5 text-[13px] text-fg',
+          'placeholder:text-fg-subtle',
+          'focus:border-line-strong focus:outline-none',
+          error && 'border-risk-critical',
+          className,
+        )}
+        aria-invalid={error ? true : undefined}
+        aria-describedby={error && inputId ? `${inputId}-error` : undefined}
+        {...rest}
+      />
 
       {error ? (
-        <p id={fieldId ? `${fieldId}-error` : undefined} className="mt-1.5 text-xs text-red-500">
+        <p
+          id={inputId ? `${inputId}-error` : undefined}
+          className="mt-1 text-[11px] text-risk-critical"
+        >
           {error}
         </p>
       ) : hint ? (
-        <p className="mt-1.5 text-xs text-fg-subtle">{hint}</p>
+        <p className="mt-1 text-[10px] leading-snug text-fg-subtle">{hint}</p>
       ) : null}
     </div>
   );
 }
 
-interface SelectProps extends SelectHTMLAttributes<HTMLSelectElement> {
-  label?: string;
-  children: ReactNode;
-}
-
-export function Select({ label, className, children, id, ...props }: SelectProps) {
-  const fieldId = id ?? props.name;
+export function Select({
+  label,
+  className,
+  id,
+  children,
+  ...rest
+}: SelectHTMLAttributes<HTMLSelectElement> & { label?: string }) {
+  const selectId = id ?? rest.name;
 
   return (
-    <div className="w-full">
+    <div>
       {label ? (
-        <label htmlFor={fieldId} className="mb-1.5 block text-xs font-medium text-fg-muted">
+        <label htmlFor={selectId} className="tims-label mb-1 block">
           {label}
         </label>
       ) : null}
-      <select {...props} id={fieldId} className={cn(FIELD_CLASS, 'h-10 cursor-pointer pr-8', className)}>
+      <select
+        id={selectId}
+        className={cn(
+          'tims-data w-full appearance-none border border-line bg-surface-2 px-2 py-1.5 text-[12px] text-fg',
+          'focus:border-line-strong focus:outline-none',
+          className,
+        )}
+        {...rest}
+      >
         {children}
       </select>
+    </div>
+  );
+}
+
+/** Search field with a mono prefix marker instead of a magnifier icon. */
+export function SearchInput({
+  value,
+  onChange,
+  placeholder = 'Search',
+  className,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  className?: string;
+}) {
+  return (
+    <div className={cn('flex items-center border border-line bg-surface-2', className)}>
+      <span className="tims-data flex-none px-2 text-[11px] text-fg-subtle" aria-hidden>
+        /
+      </span>
+      <input
+        type="search"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
+        aria-label={placeholder}
+        className="w-full bg-transparent py-1.5 pr-2 text-[12px] text-fg placeholder:text-fg-subtle focus:outline-none"
+      />
     </div>
   );
 }

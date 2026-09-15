@@ -14,22 +14,31 @@
     "prisma:studio": "prisma studio",
     "db:seed": "tsx src/scripts/seed.ts",
     "db:reset": "prisma migrate reset --force",
-    "firms:ingest": "tsx src/scripts/ingest.ts"
+    "firms:ingest": "tsx src/scripts/ingest.ts",
+    "db:boundary": "tsx src/scripts/loadBoundary.ts",
+    "osm:sync": "tsx src/scripts/osmSync.ts",
+    "firms:archive": "tsx src/scripts/ingest.ts -- --archive",
+    "ml:export": "tsx src/scripts/exportTrainingData.ts",
+    "pipeline": "npm run db:boundary && npm run osm:sync && npm run firms:ingest",
+    "db:purge-synthetic": "tsx src/scripts/purgeSynthetic.ts",
+    "ml:reclassify": "tsx src/scripts/reclassify.ts",
+    "db:recompute": "tsx src/scripts/recompute.ts",
+    "verify": "tsx src/scripts/verify.ts"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
-
   "dependencies": {
-    "cors": "^2.8.5",
     "@prisma/adapter-pg": "^7.10.0",
     "@prisma/client": "^7.10.0",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/morgan": "^1.9.10",
+    "axios": "^1.20.0",
     "bcryptjs": "^3.0.3",
+    "cors": "^2.8.5",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "express-rate-limit": "^8.7.0",
@@ -38,6 +47,7 @@
     "morgan": "^1.12.0",
     "node-cron": "^4.6.0",
     "pg": "^8.23.0",
+    "socket.io": "^4.8.3",
     "zod": "^4.5.4"
   },
   "devDependencies": {

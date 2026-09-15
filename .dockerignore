@@ -1,0 +1,32 @@
+# Repository-root ignore list.
+#
+# The ml-service image builds from here (so it can read ml/models/), which
+# means this file — not ml-service/.dockerignore — controls the build context.
+# Without it the context would include node_modules and .next, which is
+# hundreds of megabytes the image never touches.
+
+node_modules/
+**/node_modules/
+.git/
+.next/
+**/.next/
+dist/
+**/dist/
+backend/src/generated/
+
+# Intermediate training data. The image needs the model artefact, not the CSVs
+# it was trained from.
+ml/data/
+ml/reports/
+__pycache__/
+**/__pycache__/
+
+.env
+.env.local
+**/.env
+**/.env.local
+
+*.log
+*.tsbuildinfo
+.vscode/
+.idea/

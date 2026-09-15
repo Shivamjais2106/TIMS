@@ -1,125 +1,95 @@
 'use client';
 
-import {
-  BellRing,
-  ChartColumn,
-  Factory,
-  Flame,
-  LayoutDashboard,
-  Map as MapIcon,
-  Satellite,
-  X,
-  type LucideIcon,
-} from 'lucide-react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { NAV_ITEMS } from '@/lib/constants';
+import { PILOT } from '@/lib/bhopal';
 import { cn } from '@/lib/utils';
 import { Wordmark } from './Logo';
 
-const ICONS: Record<string, LucideIcon> = {
-  LayoutDashboard,
-  Map: MapIcon,
-  Flame,
-  Factory,
-  ChartColumn,
-  BellRing,
-};
-
-interface SidebarProps {
-  /** Unread alert count, rendered as a badge on the Alerts item. */
+/**
+ * Navigation rail.
+ *
+ * Each item carries a three-letter mono channel code alongside its name, the
+ * way a physical instrument labels its inputs. The active item is marked by a
+ * 2px rust left border rather than a filled pill.
+ */
+export function Sidebar({
+  unreadAlerts,
+  onNavigate,
+  className,
+}: {
   unreadAlerts?: number;
-  /** Mobile drawer state. On desktop the sidebar is always visible. */
-  open: boolean;
-  onClose: () => void;
-}
-
-export function Sidebar({ unreadAlerts = 0, open, onClose }: SidebarProps) {
+  /** Called after a link is followed, so the mobile drawer can close itself. */
+  onNavigate?: () => void;
+  className?: string;
+}) {
   const pathname = usePathname();
 
   return (
-    <>
-      {/* Mobile scrim */}
-      <div
-        className={cn(
-          'fixed inset-0 z-30 bg-black/60 backdrop-blur-sm transition-opacity lg:hidden',
-          open ? 'opacity-100' : 'pointer-events-none opacity-0',
-        )}
-        onClick={onClose}
-        aria-hidden
-      />
+    <nav
+      className={cn('flex h-full flex-col border-r border-line bg-surface', className)}
+      aria-label="Main navigation"
+    >
+      <div className="flex h-12 flex-none items-center border-b border-line px-3">
+        <Wordmark href="/dashboard" />
+      </div>
 
-      <aside
-        className={cn(
-          'fixed inset-y-0 left-0 z-40 flex w-64 flex-col border-r border-line bg-surface',
-          'transition-transform duration-200 lg:translate-x-0',
-          open ? 'translate-x-0' : '-translate-x-full',
-        )}
-      >
-        <div className="flex h-16 items-center justify-between border-b border-line px-5">
-          <Link href="/dashboard" className="rounded-md" onClick={onClose}>
-            <Wordmark />
-          </Link>
-          <button
-            type="button"
-            onClick={onClose}
-            className="grid size-8 place-items-center rounded-md text-fg-muted hover:bg-surface-3 lg:hidden"
-            aria-label="Close navigation"
-          >
-            <X className="size-4" aria-hidden />
-          </button>
-        </div>
+      <ul className="flex-1 overflow-y-auto py-1">
+        {NAV_ITEMS.map((item) => {
+          // Exact match for the dashboard root, prefix match elsewhere, so
+          // /dashboard does not stay highlighted on every sub-route.
+          const active =
+            item.href === '/dashboard' ? pathname === item.href : pathname.startsWith(item.href);
 
-        <nav className="flex-1 space-y-0.5 overflow-y-auto p-3" aria-label="Main">
-          <p className="px-3 pb-2 pt-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-fg-subtle">
-            Monitoring
-          </p>
+          const badge = item.href === '/dashboard/alerts' ? unreadAlerts : undefined;
 
-          {NAV_ITEMS.map((item) => {
-            const Icon = ICONS[item.icon] ?? LayoutDashboard;
-            // Exact match for the overview so it does not stay lit on children.
-            const active = item.href === '/dashboard' ? pathname === item.href : pathname.startsWith(item.href);
-
-            return (
+          return (
+            <li key={item.href}>
               <Link
-                key={item.href}
                 href={item.href}
-                onClick={onClose}
+                onClick={onNavigate}
                 aria-current={active ? 'page' : undefined}
                 className={cn(
-                  'group relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors',
+                  'tims-nav-item flex items-center gap-2.5 border-l-2 px-3 py-[7px]',
                   active
-                    ? 'bg-primary/10 font-medium text-primary'
-                    : 'text-fg-muted hover:bg-surface-3 hover:text-fg',
+                    ? 'border-l-rust bg-surface-2 text-fg'
+                    : 'border-l-transparent text-fg-muted hover:bg-surface-2 hover:text-fg',
                 )}
               >
-                {active ? (
-                  <span className="absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-primary" aria-hidden />
-                ) : null}
-                <Icon className="size-4 shrink-0" aria-hidden />
-                <span className="flex-1 truncate">{item.label}</span>
-                {item.href === '/dashboard/alerts' && unreadAlerts > 0 ? (
-                  <span className="tims-data rounded-full bg-red-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-red-500">
-                    {unreadAlerts > 99 ? '99+' : unreadAlerts}
+                <span
+                  className={cn(
+                    'tims-data w-[26px] flex-none text-[10px] tracking-[0.08em]',
+                    active ? 'text-rust' : 'text-fg-subtle',
+                  )}
+                >
+                  {item.code}
+                </span>
+                <span className="flex-1 truncate text-[12px]">{item.label}</span>
+
+                {badge && badge > 0 ? (
+                  <span
+                    className="tims-data flex-none border border-rust px-1 text-[10px] leading-[14px] text-rust"
+                    aria-label={`${badge} unread alerts`}
+                  >
+                    {badge > 99 ? '99+' : badge}
                   </span>
                 ) : null}
               </Link>
-            );
-          })}
-        </nav>
+            </li>
+          );
+        })}
+      </ul>
 
-        <div className="border-t border-line p-3">
-          <div className="rounded-lg bg-surface-2 p-3">
-            <div className="flex items-center gap-2 text-primary">
-              <Satellite className="size-3.5" aria-hidden />
-              <p className="text-[11px] font-semibold uppercase tracking-wide">Data sources</p>
-            </div>
-            <p className="mt-1.5 text-[11px] leading-relaxed text-fg-subtle">
-              NASA FIRMS (VIIRS / MODIS) thermal anomalies fused with OpenStreetMap industrial geometry.
-            </p>
-          </div>
-        </div>
-      </aside>
-    </>
+      <div className="flex-none border-t border-line px-3 py-2">
+        <p className="tims-label">Pilot area</p>
+        <p className="tims-data mt-0.5 text-[11px] text-fg-muted">
+          {PILOT.label}, {PILOT.state}
+        </p>
+        <p className="mt-1.5 text-[9px] leading-snug text-fg-subtle">
+          Decision support only. Not an official emergency alerting system.
+        </p>
+      </div>
+    </nav>
   );
 }

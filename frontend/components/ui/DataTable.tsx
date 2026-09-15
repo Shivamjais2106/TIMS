@@ -1,140 +1,183 @@
 'use client';
 
-import { ChevronLeft, ChevronRight } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { cn } from '@/lib/utils';
-import type { PaginationMeta } from '@/types';
-import { EmptyState } from './EmptyState';
-import { TableSkeleton } from './LoadingState';
+
+/**
+ * Sortable data table.
+ *
+ * Hairline rules, mono numerics, right-aligned numeric columns, no zebra
+ * striping — the reading aid is alignment, not background colour. Row hover is
+ * a 150ms surface change driven by CSS rather than JS.
+ */
 
 export interface Column<T> {
   key: string;
   header: string;
-  /** Cell renderer. Receives the whole row so it can combine fields. */
+  /** Right-align and render in mono. Set for every numeric column. */
+  numeric?: boolean;
+  /** Sort key sent to the API. Omit to make the column unsortable. */
+  sortKey?: string;
+  width?: string;
   render: (row: T) => ReactNode;
-  className?: string;
-  headerClassName?: string;
-  /** Hidden below `md` — use for secondary columns on narrow screens. */
-  hideOnMobile?: boolean;
-}
-
-interface DataTableProps<T> {
-  columns: Column<T>[];
-  rows: T[];
-  rowKey: (row: T) => string;
-  loading?: boolean;
-  emptyTitle?: string;
-  emptyDescription?: string;
-  onRowClick?: (row: T) => void;
-  meta?: PaginationMeta;
-  onPageChange?: (page: number) => void;
-  className?: string;
+  /** Hidden below the md breakpoint, for columns that are nice-to-have. */
+  secondary?: boolean;
 }
 
 export function DataTable<T>({
   columns,
   rows,
   rowKey,
-  loading = false,
-  emptyTitle = 'No records found',
-  emptyDescription = 'Try widening your filters or a different time window.',
   onRowClick,
-  meta,
-  onPageChange,
+  sortBy,
+  sortOrder,
+  onSort,
+  emptyMessage = 'No records',
   className,
-}: DataTableProps<T>) {
-  if (loading && rows.length === 0) {
-    return <TableSkeleton rows={6} columns={Math.min(columns.length, 6)} />;
-  }
-
-  if (rows.length === 0) {
-    return <EmptyState title={emptyTitle} description={emptyDescription} />;
-  }
-
+}: {
+  columns: Array<Column<T>>;
+  rows: T[];
+  rowKey: (row: T) => string;
+  onRowClick?: (row: T) => void;
+  sortBy?: string;
+  sortOrder?: 'asc' | 'desc';
+  onSort?: (key: string) => void;
+  emptyMessage?: string;
+  className?: string;
+}) {
   return (
-    <div className={cn('flex flex-col', className)}>
-      <div className="overflow-x-auto">
-        <table className="w-full border-collapse text-sm">
-          <thead>
-            <tr className="border-b border-line">
-              {columns.map((column) => (
+    <div className={cn('overflow-x-auto', className)}>
+      <table className="w-full border-collapse text-left">
+        <thead>
+          <tr className="border-b border-line">
+            {columns.map((column) => {
+              const isSorted = sortBy === column.sortKey;
+              const sortable = Boolean(column.sortKey && onSort);
+
+              return (
                 <th
                   key={column.key}
                   scope="col"
+                  style={column.width ? { width: column.width } : undefined}
                   className={cn(
-                    'whitespace-nowrap px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wide text-fg-subtle',
-                    column.hideOnMobile ? 'hidden md:table-cell' : '',
-                    column.headerClassName,
+                    'bg-surface-2 px-2.5 py-1.5 align-middle',
+                    column.numeric && 'text-right',
+                    column.secondary && 'hidden md:table-cell',
                   )}
+                  aria-sort={isSorted ? (sortOrder === 'asc' ? 'ascending' : 'descending') : undefined}
                 >
-                  {column.header}
+                  {sortable ? (
+                    <button
+                      type="button"
+                      onClick={() => onSort?.(column.sortKey as string)}
+                      className={cn(
+                        'tims-label tims-nav-item -mx-1 px-1 py-0.5 hover:text-fg',
+                        isSorted && 'text-fg',
+                      )}
+                    >
+                      {column.header}
+                      <span className="ml-1 inline-block w-2 text-fg-subtle">
+                        {isSorted ? (sortOrder === 'asc' ? '↑' : '↓') : ''}
+                      </span>
+                    </button>
+                  ) : (
+                    <span className="tims-label">{column.header}</span>
+                  )}
                 </th>
-              ))}
+              );
+            })}
+          </tr>
+        </thead>
+
+        <tbody>
+          {rows.length === 0 ? (
+            <tr>
+              <td colSpan={columns.length} className="px-3 py-10 text-center text-[12px] text-fg-subtle">
+                {emptyMessage}
+              </td>
             </tr>
-          </thead>
-          <tbody>
-            {rows.map((row) => (
+          ) : (
+            rows.map((row) => (
               <tr
                 key={rowKey(row)}
                 onClick={onRowClick ? () => onRowClick(row) : undefined}
                 className={cn(
-                  'border-b border-line/70 last:border-0 transition-colors',
-                  onRowClick ? 'cursor-pointer hover:bg-surface-2' : '',
+                  'tims-row border-b border-line/70',
+                  onRowClick && 'cursor-pointer',
                 )}
               >
                 {columns.map((column) => (
                   <td
                     key={column.key}
                     className={cn(
-                      'px-4 py-3 align-middle text-fg',
-                      column.hideOnMobile ? 'hidden md:table-cell' : '',
-                      column.className,
+                      'px-2.5 py-2 align-middle text-[12px] text-fg',
+                      column.numeric && 'tims-data text-right',
+                      column.secondary && 'hidden md:table-cell',
                     )}
                   >
                     {column.render(row)}
                   </td>
                 ))}
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+            ))
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
 
-      {meta && onPageChange && meta.totalPages > 1 ? (
-        <nav
-          aria-label="Pagination"
-          className="flex items-center justify-between gap-3 border-t border-line px-4 py-3 text-xs text-fg-muted"
+/** Pagination footer. Mono counters, square buttons. */
+export function Pagination({
+  page,
+  pageSize,
+  total,
+  totalPages,
+  onPageChange,
+  className,
+}: {
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+  onPageChange: (page: number) => void;
+  className?: string;
+}) {
+  const first = total === 0 ? 0 : (page - 1) * pageSize + 1;
+  const last = Math.min(page * pageSize, total);
+
+  return (
+    <div
+      className={cn(
+        'flex items-center justify-between gap-3 border-t border-line px-3 py-2',
+        className,
+      )}
+    >
+      <p className="tims-data text-[11px] text-fg-subtle">
+        {first}–{last} of {total.toLocaleString('en-IN')}
+      </p>
+
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          onClick={() => onPageChange(page - 1)}
+          disabled={page <= 1}
+          className="tims-nav-item tims-data border border-line px-2 py-1 text-[11px] text-fg-muted hover:border-line-strong hover:text-fg disabled:cursor-not-allowed disabled:opacity-35"
         >
-          <p className="tims-data">
-            {(meta.page - 1) * meta.pageSize + 1}&ndash;{Math.min(meta.page * meta.pageSize, meta.total)} of{' '}
-            {meta.total}
-          </p>
-
-          <div className="flex items-center gap-1.5">
-            <button
-              type="button"
-              onClick={() => onPageChange(meta.page - 1)}
-              disabled={!meta.hasPreviousPage}
-              className="inline-flex size-7 items-center justify-center rounded-md ring-1 ring-inset ring-line hover:bg-surface-3 disabled:opacity-40 disabled:hover:bg-transparent"
-              aria-label="Previous page"
-            >
-              <ChevronLeft className="size-4" aria-hidden />
-            </button>
-            <span className="tims-data px-1">
-              {meta.page} / {meta.totalPages}
-            </span>
-            <button
-              type="button"
-              onClick={() => onPageChange(meta.page + 1)}
-              disabled={!meta.hasNextPage}
-              className="inline-flex size-7 items-center justify-center rounded-md ring-1 ring-inset ring-line hover:bg-surface-3 disabled:opacity-40 disabled:hover:bg-transparent"
-              aria-label="Next page"
-            >
-              <ChevronRight className="size-4" aria-hidden />
-            </button>
-          </div>
-        </nav>
-      ) : null}
+          ← Prev
+        </button>
+        <span className="tims-data px-2 text-[11px] text-fg-muted">
+          {page} / {Math.max(1, totalPages)}
+        </span>
+        <button
+          type="button"
+          onClick={() => onPageChange(page + 1)}
+          disabled={page >= totalPages}
+          className="tims-nav-item tims-data border border-line px-2 py-1 text-[11px] text-fg-muted hover:border-line-strong hover:text-fg disabled:cursor-not-allowed disabled:opacity-35"
+        >
+          Next →
+        </button>
+      </div>
     </div>
   );
 }

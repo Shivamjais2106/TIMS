@@ -1,10 +1,17 @@
-# Local PostgreSQL + PostGIS for TIMS development.
+# ---------------------------------------------------------------------------
+# TIMS — local stack
 #
-#   docker compose up -d
-#   cd backend && npm run prisma:deploy && npm run db:seed
+#   docker compose up -d                 # database + ML service
+#   docker compose up -d postgis         # database only
 #
-# The matching connection string is:
-#   DATABASE_URL="postgresql://tims:tims@localhost:5432/tims?schema=public"
+# Then, from the repository root:
+#   npm run setup                        # migrate, load boundary, seed
+#   npm run pipeline                     # real OSM + FIRMS ingest
+#
+# The Node backend and Next.js frontend run on the host rather than in
+# containers: both are developed with hot reload, and the ML service is the only
+# component whose Python dependency set is worth pinning in an image.
+# ---------------------------------------------------------------------------
 
 services:
   postgis:
@@ -24,6 +31,32 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  ml-service:
+    build:
+      # Repository root, so the image can copy the trained model out of
+      # ml/models/ rather than needing a duplicate under ml-service/.
+      context: .
+      dockerfile: ./ml-service/Dockerfile
+    container_name: tims-ml
+    restart: unless-stopped
+    ports:
+      - '8000:8000'
+    environment:
+      # Baked into the image by the Dockerfile; overridden here only to make
+      # the path explicit for anyone reading the compose file.
+      MODEL_PATH: /app/models/classifier.joblib
+      MODEL_METADATA_PATH: /app/models/model_metadata.json
+      ALLOWED_ORIGINS: 'http://localhost:4000,http://localhost:3000'
+    healthcheck:
+      # Reports unhealthy when the model failed to load, not merely when the
+      # port is open — a service that cannot predict should not take traffic.
+      test:
+        ['CMD-SHELL', 'curl -fsS http://localhost:8000/health | grep -q ''"status":"ok"''']
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
 
 volumes:
   tims-pgdata:

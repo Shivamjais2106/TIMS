@@ -1,0 +1,195 @@
+{
+  "model_version": "bhopal-01-v1",
+  "algorithm": "XGBoost (primary)",
+  "trained_at": "2026-09-15T07:47:42.939441+00:00",
+  "pilot": {
+    "id": "BHOPAL-01",
+    "label": "Bhopal",
+    "state": "Madhya Pradesh",
+    "country": "India",
+    "timezone": "Asia/Kolkata"
+  },
+  "features": [
+    "brightness",
+    "frp",
+    "distance_to_facility_m",
+    "recurrence_count",
+    "is_night"
+  ],
+  "classes": [
+    "POSSIBLE_AGRICULTURAL_BURN",
+    "POSSIBLE_INDUSTRIAL_FIRE",
+    "POSSIBLE_PERSISTENT_THERMAL_SOURCE",
+    "POSSIBLE_VEGETATION_FIRE"
+  ],
+  "dataset": {
+    "rows_total": 1294,
+    "rows_train": 1035,
+    "rows_test": 259,
+    "date_range": [
+      "2024-02-02 07:54:00+00:00",
+      "2026-05-01 20:43:00+00:00"
+    ],
+    "class_counts": {
+      "POSSIBLE_AGRICULTURAL_BURN": 164,
+      "POSSIBLE_INDUSTRIAL_FIRE": 29,
+      "POSSIBLE_PERSISTENT_THERMAL_SOURCE": 30,
+      "POSSIBLE_VEGETATION_FIRE": 1071
+    },
+    "label_source": "heuristic-weak-v1",
+    "ground_truth": false
+  },
+  "metrics": {
+    "XGBoost (primary)": {
+      "accuracy": 0.9613899613899614,
+      "macro_f1": 0.8424611801874424,
+      "weighted_f1": 0.9636470316051134,
+      "per_class": {
+        "POSSIBLE_AGRICULTURAL_BURN": {
+          "precision": 0.9411764705882353,
+          "recall": 0.9696969696969697,
+          "f1": 0.9552238805970149,
+          "support": 33.0
+        },
+        "POSSIBLE_INDUSTRIAL_FIRE": {
+          "precision": 0.5555555555555556,
+          "recall": 0.8333333333333334,
+          "f1": 0.6666666666666666,
+          "support": 6.0
+        },
+        "POSSIBLE_PERSISTENT_THERMAL_SOURCE": {
+          "precision": 0.7142857142857143,
+          "recall": 0.8333333333333334,
+          "f1": 0.7692307692307693,
+          "support": 6.0
+        },
+        "POSSIBLE_VEGETATION_FIRE": {
+          "precision": 0.9904306220095693,
+          "recall": 0.9672897196261683,
+          "f1": 0.9787234042553191,
+          "support": 214.0
+        }
+      },
+      "confusion_matrix": [
+        [
+          32,
+          0,
+          0,
+          1
+        ],
+        [
+          0,
+          5,
+          0,
+          1
+        ],
+        [
+          0,
+          1,
+          5,
+          0
+        ],
+        [
+          2,
+          3,
+          2,
+          207
+        ]
+      ]
+    },
+    "Random Forest (baseline)": {
+      "accuracy": 0.9806949806949807,
+      "macro_f1": 0.9215378401733272,
+      "weighted_f1": 0.9802594336965463,
+      "per_class": {
+        "POSSIBLE_AGRICULTURAL_BURN": {
+          "precision": 0.9428571428571428,
+          "recall": 1.0,
+          "f1": 0.9705882352941176,
+          "support": 33.0
+        },
+        "POSSIBLE_INDUSTRIAL_FIRE": {
+          "precision": 0.8,
+          "recall": 0.6666666666666666,
+          "f1": 0.7272727272727273,
+          "support": 6.0
+        },
+        "POSSIBLE_PERSISTENT_THERMAL_SOURCE": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "support": 6.0
+        },
+        "POSSIBLE_VEGETATION_FIRE": {
+          "precision": 0.9906103286384976,
+          "recall": 0.985981308411215,
+          "f1": 0.9882903981264637,
+          "support": 214.0
+        }
+      },
+      "confusion_matrix": [
+        [
+          33,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          4,
+          0,
+          2
+        ],
+        [
+          0,
+          0,
+          6,
+          0
+        ],
+        [
+          2,
+          1,
+          0,
+          211
+        ]
+      ]
+    }
+  },
+  "cross_validation": {
+    "XGBoost (primary)": {
+      "macro_f1_mean": 0.9063039411742343,
+      "macro_f1_std": 0.07437461247061275,
+      "folds": [
+        0.9076061568339282,
+        0.944856064770853,
+        1.0,
+        0.7744397759103642,
+        0.9046177083560261
+      ]
+    },
+    "Random Forest (baseline)": {
+      "macro_f1_mean": 0.8756502669914958,
+      "macro_f1_std": 0.08753853567430417,
+      "folds": [
+        0.8490730200032526,
+        0.9253257189612059,
+        1.0,
+        0.7355648926237162,
+        0.8682877033693047
+      ]
+    }
+  },
+  "feature_importance": {
+    "recurrence_count": 0.36607521772384644,
+    "distance_to_facility_m": 0.26107630133628845,
+    "is_night": 0.2501588463783264,
+    "frp": 0.0784846842288971,
+    "brightness": 0.04420500993728638
+  },
+  "selection": {
+    "basis": "5-fold stratified cross-validated macro F1",
+    "rationale": "The single 20% split holds only ~6 rows of each minority class, so its macro F1 is unstable; on this dataset the split and the CV estimate disagree about which model is better. The CV estimate is used.",
+    "selected": "XGBoost (primary)"
+  },
+  "caveat": "Trained on heuristic weak labels derived from industrial proximity and recurrence, NOT on verified ground truth. Reported metrics measure agreement with those heuristics. Distance-to-facility is both a labelling rule and a model feature, so performance is partly circular."
+}

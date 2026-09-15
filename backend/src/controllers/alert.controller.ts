@@ -3,7 +3,13 @@ import { validated } from '../middleware/validate.middleware';
 import * as alertService from '../services/alert.service';
 import { asyncHandler } from '../utils/asyncHandler';
 import { buildPaginationMeta, sendSuccess } from '../utils/response';
-import type { CreateAlertInput, ListAlertsQuery } from '../validators/alert.schema';
+import { ApiError } from '../utils/ApiError';
+import type {
+  AcknowledgeAlertInput,
+  CreateAlertInput,
+  ListAlertsQuery,
+  UpdateAlertStatusInput,
+} from '../validators/alert.schema';
 import type { IdParam } from '../validators/common.schema';
 
 export const list = asyncHandler(async (req: Request, res: Response) => {
@@ -42,4 +48,35 @@ export const create = asyncHandler(async (req: Request, res: Response) => {
 
 export const recent = asyncHandler(async (_req: Request, res: Response) => {
   sendSuccess(res, await alertService.getRecentAlerts(5));
+});
+
+/**
+ * PATCH /api/alerts/:id/acknowledge
+ *
+ * Distinct from markRead: acknowledgement is an auditable triage action
+ * asserting that a named analyst has taken ownership, so it requires an
+ * identified user and is broadcast to every other open dashboard.
+ */
+export const acknowledge = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = validated<IdParam>(req, 'params');
+  const { note } = validated<AcknowledgeAlertInput>(req, 'body');
+
+  if (!req.user) throw ApiError.unauthorized('Acknowledgement requires an authenticated analyst');
+
+  sendSuccess(res, await alertService.acknowledgeAlert(id, req.user.id, note));
+});
+
+/** PATCH /api/alerts/:id/status — resolve or dismiss. */
+export const updateStatus = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = validated<IdParam>(req, 'params');
+  const { status, note } = validated<UpdateAlertStatusInput>(req, 'body');
+
+  if (!req.user) throw ApiError.unauthorized('Changing alert status requires an authenticated analyst');
+
+  sendSuccess(res, await alertService.setAlertStatus(id, status, req.user.id, note));
+});
+
+/** GET /api/alerts/status-counts — drives the triage filter chips. */
+export const statusCounts = asyncHandler(async (_req: Request, res: Response) => {
+  sendSuccess(res, await alertService.getStatusCounts());
 });
