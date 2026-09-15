@@ -64,12 +64,12 @@ export default function LandingPage() {
       <header className="sticky top-0 z-20 flex h-12 items-center justify-between border-b border-line bg-bg/92 px-4 backdrop-blur">
         <WordmarkFull />
         <nav className="flex items-center gap-2">
-          <Link
+          {/* <Link
             href="/login"
             className="tims-nav-item border border-line px-3 py-1.5 text-[12px] text-fg-muted hover:border-line-strong hover:text-fg"
           >
             Sign in
-          </Link>
+          </Link> */}
         </nav>
       </header>
 
